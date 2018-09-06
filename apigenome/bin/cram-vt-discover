@@ -1,0 +1,51 @@
+#!/usr/bin/perl -w
+
+use strict;
+use POSIX qw(pow log10 sqrt);
+use FindBin;
+use lib $FindBin::Bin;
+use hyunlib qw(forkExecWait);
+use wGetOptions qw(wpod2usage wGetOptions);
+use Time::HiRes;
+
+## vcf-apply-external-filter
+## Apply external filter to existing VCF
+
+my $vt = "vt";
+my $vtcmd = "discover2 -z -q 20";
+my $ref = "/data/local/ref/gotcloud.ref/hg38/hs38DH.fa";
+my $samtools = "samtools";
+my $bamutil  = "bamUtil";
+my $bcftools = "bcftools";
+my $region   = "";
+my $out      = "";
+my $sm       = "";
+my $cram     = "";
+
+wGetOptions(
+    "-Run variant discovery algorithm",
+    "--Required Options",
+    "cram=s" => [\$cram, "Input CRAM file to discover variants"],
+    "out=s" =>  [\$out,  "Output BCF file name"],
+    "sm=s" =>   [\$sm,   "Sample ID"],    
+    "--Additional Options",
+    "region=s" => [\$region,"Region to focus on (CHR:BEG-END format)"],
+    "vt=s" => [\$vt,"Binary path of vt software tool"],
+    "samtools=s" => [\$samtools,"Binary path of samtools software tool"],
+    "bamutil=s" =>  [\$bamutil,"Binary path of bamUtil software tool"],
+    "bcftools=s" => [\$bcftools,"Binary path of bcftools software tool"],
+    "ref=s" => [\$ref,"Path to reference FASTA sequence"],
+    "vt-opt=s" => [\$vtcmd,"Command line argument for vt software"],        
+    ) || wpod2usage(2);
+
+unless ( ( $cram ) && ( $out ) && ( $sm ) ) {
+    print STDERR "ERROR: Missing required option\n";
+    wpod2usage(2);
+}
+
+my $cmd = "bash -c 'set -o pipefail; $samtools view -T $ref -uh $cram $region 2> $out.samtools_err | $bamutil clipoverlap --poolSize 100000000 --in -.ubam --out -.ubam 2> $out.bamUtil_err | $vt $vtcmd -b + -r $ref -s $sm -o $out 2> $out.vt_err'";
+&forkExecWait($cmd);
+
+$cmd = "$bcftools index $out";
+&forkExecWait($cmd);
+

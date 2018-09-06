@@ -1,0 +1,49 @@
+#!/usr/bin/perl -w
+
+use strict;
+use POSIX qw(pow log10 sqrt);
+use FindBin;
+use lib $FindBin::Bin;
+use hyunlib qw(forkExecWait);
+use wGetOptions qw(wpod2usage wGetOptions);
+use Time::HiRes;
+
+my $vt = "vt";
+my $vtcmd = "discover2 -z -q 20";
+my $ref = "/data/local/ref/gotcloud.ref/hg38/hs38DH.fa";
+my $samtools = "samtools";
+my $bamutil  = "bamUtil";
+my $bcftools = "bcftools";
+my $cramore  = "$FindBin::Bin/cramore";
+my $region   = "";
+my $out      = "";
+my $bcflist     = "";
+
+wGetOptions(
+    "-Merge detected variants",
+    "--Required Options",
+    "bcf-list=s" => [\$bcflist, "Merge BCF list"],
+    "out=s" =>  [\$out,  "Output BCF file name"],
+    "region=s" => [\$region,"Region to focus on (CHR:BEG-END format)"],    
+    "--Additional Options",
+    "vt=s" => [\$vt,"Binary path of vt software tool"],
+    "cramore=s" => [\$vt,"Binary path of cramore software tool"],    
+    "bcftools=s" => [\$bcftools,"Binary path of bcftools software tool"],
+    "ref=s" => [\$ref,"Path to reference FASTA sequence"],
+    ) || wpod2usage(2);
+
+unless ( ( $bcflist ) && ( $out ) && ( $region ) ) {
+    print STDERR "ERROR: Missing required option\n";
+    wpod2usage(2);
+}
+
+my ($chr,$beg,$end) = split(/[:\-]/,$region);
+$beg = 0 unless (defined($beg));
+$end = 1000000000 unless (defined($end));
+
+my $cmd = "bash -c 'set pipefail; $cramore vcf-merge-candidate-variants --in-vcf-list $bcflist --region $chr:$beg-$end --out-vcf - 2> $out.merge_err | $vt annotate_indels -r $ref + -o + 2> $out.annotate_err | $vt consolidate_variants + -o $out 2> $out.consolidate_err'"; 
+&forkExecWait($cmd);
+
+$cmd = "$bcftools index $out";
+&forkExecWait($cmd);
+

@@ -1,0 +1,49 @@
+#!/usr/bin/perl -w
+
+use strict;
+use Time::HiRes qw(usleep nanosleep);
+use File::Path;
+use File::Basename;
+use FindBin;
+use lib $FindBin::Bin;
+use hyunlib qw(%hszchrs initRef forkExecWait);
+
+my $vcf = "";
+my $out = "";
+my $dbsnp = "";
+my $snpeffjar = "";
+my $snpeffdb = "GRCh38.86";
+my $addrs = "$FinBin::Bin/vcf-add-rsid";
+my $opts = "";
+my $bcftools = "bcftools";
+
+wGetOptions(
+    "-Identify nuclear families from KING2 output and sex map",
+    "--Required Options",
+    "vcf=s" => [\$vcf, "Input VCF/BCF file"],
+    "out=s" => [\$out, "Output VCF/BCF file that contains annotation and rsID"],
+    "sex=s" => [\$sexmapf, "Sex map file", "Sex map file containing the sex of each individual as ploidy of X chromosomes"],
+    "out=s" => [\$outf, "Output file", "Output file prefix"],
+    "--Additional Options",
+    "group=s" => [\$groupf, "Group file of each individual", "Group map file containing the batch information of each individual"],
+    "dup-thres=f" => [\$dupThres, "Mininumn kinship coefficient to be considered as duplicate pair"],
+    "rel-thres=f" => [\$relThres, "Mininumn kinship coefficient to be considered as 1st degree relative"],
+    "po-thres=f" => [\$poThres, "Maximum IBS0 coefficient to be considered as parent-offspring pair"],
+    "rm-overlap" => [\$rmOverlap, "Remove overlapping individuals between families"],
+    ) || wpod2usage(2);
+
+unless ( ( $kin0f ) && ( $outf ) && ( $sexmapf ) ) {
+    print STDERR "ERROR: Missing required option\n";
+}
+
+if ( ( $vcf =~ /.vcf.gz$/ ) || ( $vcf =~ /.vcf$/ ) ) {
+    my $cmd = "java $opts -jar $snpEff $snpeffdb $vcf | $addrs --vcf /dev/stdin --out $out";
+    &forkExecWaiit($cmd);
+}
+elsif ( $vcf =~ /.bcf$/ ) {
+    my $cmd = "java $opts -jar $snpEff $snpeffdb $vcf | $addrs --vcf /dev/stdin --out $out";
+    &forkExecWaiit($cmd);    
+}
+else {
+    die "Cannot recogsize the file format for $vcf. Only .vcf, .vcf.gz and .bcf format are currently accepted\n";
+}

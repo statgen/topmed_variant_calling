@@ -1,0 +1,494 @@
+#!/usr/bin/perl -w
+
+##################################################################
+
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+use hyunlib qw(forkExecWait);
+use wGetOptions qw(wpod2usage wGetOptions);
+use warnings;
+
+my $refFlat = "/net/fantasia/home/hmkang/data/UCSC/hg19/refFlat.txt.gz";
+#my $vcf = "/net/1000g/hmkang/1KG/20101123/integration/release/ALL.chr1.merged_beagle_mach.20101123.snps_indels_svs.vcf.gz";
+#my $vcf = "/net/fantasia/home/hmkang/data/1KG.phase1.interim.bcm/ALL.chr1.phase1.projectConsensus.genotypes.vcf.gz";
+my $vcf = "/net/1000g/1000g/release/20110521/ALL.chr1.phase1_release_v3.20101123.snps_indels_svs.genotypes.vcf.gz";
+my $map = "/net/fantasia/home/hmkang/data/genmap/genetic_map_GRCh37_wgs.txt.gz";
+my $pop = "EUR";
+my $indexf = "/net/fantasia/home/hmkang/data/1KG.phase1/umake.1KG.1092.index";
+my $r2thres = 0.5;
+my $cMext = 0.02;
+my $dbSNP = "/net/fantasia/home/hmkang/data/dbSNP/b135/dbsnp_135.rssorted.txt.gz";
+#my $dbSNP = "/net/fantasia/home/hmkang/data/dbSNP/b129.ncbi37/dbsnp_129_b37.rod.map";
+my $win = 1000000;
+my $snpid = "";
+my $tableFlag = "";
+my $plotRegion = "";
+my $shadeRegion = "";
+my $outf = "";
+my $pointsize = 1;
+
+wGetOptions(
+    "-Select and visualize fine mapping regions based on index SNP, LD and genetic map\nThis program takes an index SNP ([chrom:pos] format, [chrom:pos:REF:ALT] format, or rsID), a 1000 Genomes VCF, and genetic map as input arguments to create a boundary for fine mapping region with the criteria}",
+    "--Required parameters",
+    "snpid=s",[\$snpid,"(required) index SNP given by rsID, [chrom:pos], or [chrom:pos:REF:ALT] format"],
+    "vcf=s",[\$vcf,"Input VCF file containing the genotypes for LD computation"],
+    "map=s",[\$map,"Genetic map file containing centimorgan and recombination rate"],
+    "r2thres=f",[\$r2thres, "Minimum r2 threshold for selecting boundaries"],
+    "--Required parameters",
+    "indexf=s",[\$indexf,"Index file containing the list of IDs (and population label) to include. If absent, it uses all individuals in the VCF"],    
+    "pop=s",[\$pop,"Population or superpopulation label to subset the individuals. If absent, it uses all individuals in the index file"],
+    "cMext=f",\$cMext,
+    "dbSNP=s",\$dbSNP,
+    "win=i",\$win,
+    "table",\$tableFlag,
+    "plotregion=s",\$plotRegion,
+    "shaderegion=s",\$shadeRegion,
+    "out=s",\$outf,
+    );
+
+my $usage = <<END;
+--------------------------------------------------------------------------------
+fineMappingPlotter.pl : Select & plot regions for fine mapping from a index SNP
+--------------------------------------------------------------------------------
+This program takes index SNP ([chrom:pos] format or rsID) as input argument with
+additional optional arguments to create a boundary for fine mapping for the index
+SNP.
+--------------------------------------------------------------------------------
+Usage: perl fineMappingSelector.pl --snpid [rsid or chrom:pos] 
+         --out [output prefix] --vcf [input VCF]
+         --map [genetic_map_file] --pop [population name] 
+         --index [population label index] --r2thres [r2 threshold]
+         --cMext [centimorgan to extend] --dbSNP [dbSNP ID] --win [window size]
+         --table [flag for generating table]
+Options:
+   --snpid (required) : index SNP given by rsID or [chrom:pos] format
+   --out (required) : output prefix (.pdf will be generated)
+   --vcf : Input VCF file containing the genotypes for LD computation
+           (default: 1000 genomes May 2011 release)
+   --map : Genetic map file (default : build 37 integrated map)
+   --pop : Population label (EUR - default, or AFR, AMR, ASN)
+   --index : Population label index file (1000 genomes May 2011)
+   --r2thres : r2 threshold for selecting boundaries (default: 0.5)
+   --cMext : centimorgan to extend from the r2 boundary (default: 0.02)
+   with rich set of INFO fields to be inverse normalized
+   --dbSNP : dbSNP file (default: build 129)
+   --win : maximum window size in bp
+   --plotRegion : redefine region to plot in chr:start-end format
+   --shadeRegion : redefine region to shade in chr:start-end format
+   --table : output in table format
+--------------------------------------------------------------------------------
+END
+
+unless ( ( $result ) && ( $snpid ) && ( $outf ) ) {
+    die "Error in parsing options\n$usage\n";
+}
+
+my %hids = ();
+print STDERR "Opening index file and extracting the individuals to include..\n";
+open(IN,$indexf) || die "Cannot open file $indexf\n";
+while(<IN>) {
+    my ($id,@pops) = split(/[\t\r\n\s,]+/);
+    if ( (!defined($pop)) || ( $pop eq "" ) ) {
+	$hids{$id} = 1;
+    }
+    else {
+	foreach my $p (@pops) {
+	    next if ( $p =~ /^\// );
+	    #$hids{$id} = $p;
+	    $hids{$id} = 1 if ( $p eq $pop );
+	}
+    }
+}
+close IN;
+
+## if SNP is in dbSNP, try to find it
+my ($chr,$indexbp);
+if ( $snpid =~ /^rs(\d+)$/ ) {
+    #my @F = split(/\s+/,`grep -w $snpid $dbSNP`);
+    my @F = split(/\s+/,`tabix $dbSNP b135:$1-$1`);
+    if ( $#F < 0 ) {
+	die "Cannot find $snpid in $dbSNP\n";
+    }
+    else {
+	$chr = $F[2];
+	$indexbp = $F[3];
+    }
+}
+elsif ( $snpid =~ /^(\d+|X|Y|MT):(\d+)/ ) {
+    $chr = $1;
+    $indexbp = $2;
+}
+else {
+    die "Cannot recognize snpid $snpid\n";
+}
+
+print STDERR "SNP ID : $snpid at chromosome $chr, position $indexbp\n";
+print STDERR "Examining +-$win bp window\n";
+
+$vcf =~ s/chr1\./chr$chr\./;
+print STDERR "Setting VCF file name as $vcf..\n";
+
+## Retrieve genetic map information
+my $start = ($indexbp > $win) ? ($indexbp-$win) : 0;
+my $end = $indexbp+$win;
+
+my $region = "$chr:$start-$end";
+
+my @mapPos = ();
+my @mapCMs = ();
+open(IN,"tabix $map $region|") || die "Cannot open file\n";
+while(<IN>) {
+    my ($chrom,$bp,$rate,$cM) = split;
+    push(@mapPos,$bp);
+    push(@mapCMs,$cM);
+}
+close IN;
+
+my $indexcm;
+for(my $i=0; $i < @mapPos; ++$i) {
+    if ( $mapPos[$i] eq $indexbp ) {
+	$indexcm = $mapCMs[$i]
+    }
+    elsif ( $mapPos[$i] < $indexbp ) {
+	$indexcm = $mapCMs[$i];
+    }
+    elsif ( $mapPos[$i] > $indexbp ) {
+	if ( $mapPos[$i-1] < $indexbp ) {
+	    $indexcm += ($indexbp-$mapPos[$i-1])/($mapPos[$i]-$mapPos[$i-1])*($mapCMs[$i]-$mapCMs[$i-1]);
+	}
+    }
+}
+
+print STDERR "Index SNP's cM position is $indexcm\n";
+
+## Extract the valid individuals first
+my @F = split(/[\t\r\n]+/,`zcat $vcf | head -100 | grep ^#CHROM`);
+my @vids = ();
+for(my $i=9; $i < @F; ++$i) {
+    if ( defined($hids{$F[$i]}) ) {
+	push(@vids,$i);
+    }
+}
+
+## Extract the index SNP's genotypes
+@F = split(/[\t\r\n]+/,`tabix $vcf $chr:$indexbp-$indexbp | grep -v VT=SV`);
+die "Cannot find $chr:$indexbp in $vcf\n" if ( $#F < 0 );
+
+#######################
+## a   b   p
+## c   d   q
+## r   s   n
+######################
+my @anchorHaps = ();
+foreach my $v (@vids) {
+    my ($g1,$sep,$g2) = split(//,$F[$v]);
+    push(@anchorHaps,($g1 == 0) ? 0 : 1);
+    push(@anchorHaps,($g2 == 0) ? 0 : 1);
+}
+
+my $n = 2*($#vids+1);
+my $p = 0;
+foreach my $h (@anchorHaps) {
+    $p += $h; 
+}
+my $q = $n-$p;
+
+if ( ( $p == 0 ) || ( $q == 0 ) ) {
+    print STDERR "ERROR: The index SNP is monomorphic within population $pop\n";
+    die;
+}
+
+print STDERR "Computing r2 with index SNP with allele frequency ($p,$q)\n";
+
+my @r2s = ();
+my @bps = ();
+my @mafs = ();
+my $minPos = $indexbp+$win;
+my $maxPos = $indexbp-$win;
+open(IN,"tabix $vcf $region|") || die "Cannot open file\n";
+for(my $i=0; <IN>; ++$i) {
+    print STDERR "Reading $i SNPs..\n" if ( $i % 1000 == 0 );
+    @F = split(/[\t\r\n]+/);
+    my @haps = ();
+    foreach my $v (@vids) {
+	my ($g1,$sep,$g2) = split(//,$F[$v]);
+	push(@haps,($g1 == 0) ? 0 : 1);
+	push(@haps,($g2 == 0) ? 0 : 1);
+    }
+    my $r = 0;
+    my $a = 0;
+    for(my $i=0; $i < @haps; ++$i) {
+	if ( $haps[$i] == 1 ) {
+	    ++$r;
+	    ++$a if ( $anchorHaps[$i] == 1 );
+	}
+    }
+    my $s = $n-$r;
+    my ($b,$c) = ($p-$a,$r-$a);
+    my $d = $n-$a-$b-$c;
+    my $r2 = sprintf("%.4lf",($a*$d-$b*$c)*($a*$d-$b*$c)/($p*$q*$r*$s+1e-6));
+
+    my $pos = $F[1];
+    if ($r2 > $r2thres ) {
+	$minPos = $pos if ( $minPos > $pos );
+	$maxPos = $pos if ( $maxPos < $pos );
+    }
+    my $maf = (($r > $s) ? $s : $r)/$n;
+    push(@r2s,$r2);
+    push(@bps,$pos);
+    push(@mafs,$maf);
+}
+close IN;
+
+print STDERR "Unextended interval is $chr:$minPos-$maxPos (".($maxPos-$minPos)." bps)\n";
+print STDERR "Extending the intervals by $cMext cM\n";
+
+my ($mincm,$maxcm);
+for(my $i=0; $i < @mapPos; ++$i) {
+    if ( $mapPos[$i] eq $minPos ) {
+	$mincm = $mapCMs[$i];
+    }
+    elsif ( $mapPos[$i] < $minPos ) {
+	$mincm = $mapCMs[$i];
+    }
+    elsif ( $mapPos[$i] > $minPos ) {
+	if ( $mapPos[$i-1] < $minPos ) {
+	    $mincm += ($minPos-$mapPos[$i-1])/($mapPos[$i]-$mapPos[$i-1])*($mapCMs[$i]-$mapCMs[$i-1]);
+	}
+    }
+
+    if ( $mapPos[$i] eq $maxPos ) {
+	$maxcm = $mapCMs[$i];
+    }
+    elsif ( $mapPos[$i] < $maxPos ) {
+	$maxcm = $mapCMs[$i];
+    }
+    elsif ( $mapPos[$i] > $maxPos ) {
+	if ( $mapPos[$i-1] < $maxPos ) {
+	    $maxcm += ($maxPos-$mapPos[$i-1])/($mapPos[$i]-$mapPos[$i-1])*($mapCMs[$i]-$mapCMs[$i-1]);
+	}
+    }
+}
+my ($minExPos,$maxExPos) = ($minPos,$maxPos);
+for(my $i=0; $i < @mapPos; ++$i) {
+    if ( $mapCMs[$i] > $mincm - $cMext ) {
+	$minExPos = $mapPos[$i] if ( $minExPos > $mapPos[$i] );
+    }
+    if ( $mapCMs[$i] < $maxcm + $cMext ) {
+	$maxExPos = $mapPos[$i] if ( $maxExPos < $mapPos[$i] );
+    }
+}
+
+my ($norg,$next) = (0,0);
+for(my $i=0; $i < @bps; ++$i) {
+    ++$norg if ( ( $bps[$i] >= $minPos ) && ( $bps[$i] <= $maxPos ) );
+    ++$next if ( ( $bps[$i] >= $minExPos ) && ( $bps[$i] <= $maxExPos ) );
+}
+
+if ( $tableFlag ) {
+	print "#INDEX_SNP\tCHROM\tPOS\t$pop\_AF\tR2_FROM\tR2_TO\tR2_SIZE\tR2_NSNP\tEX_FROM\tEX_TO\tEX_SIZE\tEX_NSNP\n";
+	print "$snpid\t$chr\t$indexbp\t".sprintf("%.4lf",$p/($p+$q))."\t$minPos\t$maxPos\t".($maxPos-$minPos)."\t$norg\t$minExPos\t$maxExPos\t".($maxExPos-$minExPos)."\t$next\n";
+}
+else {
+print "-------------------------------------------------------\n";
+print "INDEX_SNP   \t$snpid\n";
+print "CHROM       \t$chr\n";
+print "INDEX_POS   \t$indexbp\n";
+print "1KG_".($pop)."_AF  \t".sprintf("%.4lf",$p/($p+$q))."\n";
+print "RSQ>$r2thres\_FROM\t$minPos\n";
+print "RSQ>$r2thres\_TO  \t$maxPos\n";
+print "RSQ>$r2thres\_SIZE\t".($maxPos-$minPos)."\n";
+print "RSQ>$r2thres\_#SNP\t$norg\n";
+print "+".($cMext)."cM_FROM\t$minExPos\n";
+print "+".($cMext)."cM_TO  \t$maxExPos\n";
+print "+".($cMext)."cM_SIZE\t".($maxExPos-$minExPos)."\n";
+print "+".($cMext)."cM_#SNP\t$next\n";
+print "-------------------------------------------------------\n";
+}
+#print "SNP\tCHROM\tPOS\torgMIN\torgMAX\textMIN\textMAX\tSIZE\n";
+#print "$snpid\t$chr\t$indexbp\t$minPos\t$maxPos\t$minExPos\t$maxExPos\t".($maxExPos-$minExPos)."\n";
+
+my ($plotStart,$plotEnd) = ($start,$end);
+if ( $plotRegion ) {
+    my ($c,$s,$e) = split(/[:\-]/,$plotRegion);
+    $plotStart = $s;
+    $plotEnd = $e;
+}
+
+my $bufferedStartMb = $plotStart/1e6;
+my $bufferedEndMb = $plotEnd/1e6;
+
+my ($shadeStart,$shadeEnd) = ($minExPos,$maxExPos);
+if ( $shadeRegion ) {
+    my ($c,$s,$e) = split(/[:\-]/,$shadeRegion);
+    $shadeStart = $s;
+    $shadeEnd = $e;
+}
+
+## Retrieve gene information within the region
+open(IN,"zcat $refFlat|") || die "Cannot open file\n";
+my @genes = ();
+my %hgenes = ();
+while(<IN>) {
+    my ($name1,$name2,$chr2,$strand,$txStart,$txEnd,$cdsStart,$cdsEnd,$exonCount,$exonStart,$exonEnd) = split;
+    $chr2 =~ s/^chr//;
+    if ( ( $chr eq $chr2 ) && ( $txEnd > $plotStart ) && ( $txStart < $plotEnd ) ) {
+	$exonStart =~ s/,$//;
+	$exonEnd =~ s/,$//;
+	my @exonStarts = split(/,/,$exonStart);
+	my @exonEnds = split(/,/,$exonEnd);
+	push(@genes,[$name1,$txStart/1e6,$txEnd/1e6,\@exonStarts,\@exonEnds]) unless defined($hgenes{$name1});
+	$hgenes{$name1} = 1;
+    }
+}
+close IN;
+@genes = sort {$a->[1] <=> $b->[1]} @genes;
+
+my $width = 5;
+open(CMD,">$outf.cmd") || die "Cannot open file\n";
+print CMD "set terminal postscript eps enhanced dashed dashlength 1.0 linewidth 1.0 size $width,3 font 'Calibri,15' fontfile 'calibri.pfb' fontfile 'GillSansMT.pfb' fontfile 'GillSansItalic.pfb'\n";
+print CMD "set out '$outf.eps'\n";
+print CMD "set tmargin 0.3\n";
+print CMD "set bmargin 0\n";
+print CMD "set lmargin 7\n";
+print CMD "set rmargin 7\n";
+print CMD "set multiplot layout 2,1 title '$snpid in chr$chr:$shadeStart-$shadeEnd' font 'GillSansMT,18'\n";
+print CMD "set x2range [$bufferedStartMb:$bufferedEndMb]\n";
+print CMD "set yrange [0:1]\n";
+print CMD "set format x2 \"\"\n";
+print CMD "set x2tics nomirror out\n";
+print CMD "set xrange [$bufferedStartMb:$bufferedEndMb]\n";
+print CMD "unset xtics\n";
+print CMD "set ytics nomirror out\n";
+print CMD "set ylabel 'r^2 with index SNP' offset 2\n";
+print CMD "set grid x2 y\n";
+print CMD "set y2range [0:100]\n";
+print CMD "set y2tics nomirror out\n";
+print CMD "set y2label 'Recombination rate (cM/Mb)' offset -2\n";
+print CMD "set obj 99 rect behind from 62.098986,0 to 62.5206,100 fc rgb \"#DDDDFF\" fs solid noborder\n";
+print CMD "set obj 100 rect behind from ".($shadeStart/1e6).",0 to ".($shadeEnd/1e6).",100 fc rgb \"#FFFFCC\" fs solid noborder\n";
+print CMD "plot ";
+my @xs = ();
+my @ys = ();
+my @colors = (0xFF3300,0x00AA00,0x0000AA);
+my @legends = ("MAF [0.05,0.50]","MAF [0.02,0.05)","MAF (0.00,0.02)");
+for(my $i=0; $i < @bps; ++$i) {
+    push(@xs,$bps[$i]/1e6);
+    push(@ys,$r2s[$i]);
+    my $pt = 7; #defined($hWCO{$bps[$i]}) ? 5 : ($genotypeds[$i] > 0 ? 7 : 9);
+    my $col = sprintf("'#%0X'",$colors[( $mafs[$i] >= 0.05 ) ? 0 : ( $mafs[$i] < 0.02 ? 2 : 1 )]);
+    #my $col = sprintf("'#%0X'",$colors[0]);
+    print CMD "," if ( $i > 0);
+    print CMD " '-' u 1:2 with points ps $pointsize pt $pt lc rgbcolor $col notitle axis x2y1";
+    print CMD ", '-' u 1:2 with points ps $pointsize pt ".($pt-1)." lc rgbcolor '#000000' notitle axis x2y1";
+}
+print CMD ", '-' u 1:2 with lines lt 1 lw 3 lc rgbcolor \"#6600FF\" notitle axis x2y2";
+my $indexcol = "#9999FF";
+my $indexpt = 7;
+print CMD ", '-' u 1:2 with points ps ".($pointsize*1.5)." pt $indexpt lc rgbcolor '$indexcol' notitle axis x2y1";
+print CMD ", '-' u 1:2 with points ps ".($pointsize*1.5)." pt ".($indexpt-1)." lc rgbcolor '#000000' notitle axis x2y1";
+#print CMD ",'-' u 1:2:3 with points pt 7 lc rgbcolor variable notitle axis x2y1";
+print CMD "\n";
+for(my $i=0; $i < @xs; ++$i) {
+    print CMD "$xs[$i]\t$ys[$i]\ne\n";
+    print CMD "$xs[$i]\t$ys[$i]\ne\n";
+}
+open(IN,"tabix $map $region |") || die "Cannot open file\n";
+while(<IN>) {
+    my ($chr,$bp,$rate) = split;
+    printf CMD ("%.6lf\t$rate\n",$bp/1e6);
+}
+close IN;
+print CMD "e\n";
+print CMD ($indexbp/1e6)."\t1\n";
+print CMD "e\n";
+print CMD ($indexbp/1e6)."\t1\n";
+print CMD "e\n";
+
+my $nobj = 1;
+my $ystep = 0.1;
+my $y;
+my $ymstep = 0.01;
+my $yoffset = -0.05;
+my $geneFontSize = ($#genes > 5) ? ( $#genes > 11 ? 12 : 14 ) : 16;
+my @geneEnds = ();
+for(my $i=0; $i < @genes; ++$i) {
+    my ($geneName,$txStart,$txEnd) = ($genes[$i]->[0],$genes[$i]->[1],$genes[$i]->[2]);
+    my ($xStart,$xEnd,$xLabel,$xAlign);
+    my $lenLabel = ($bufferedEndMb-$bufferedStartMb) * 0.02 * $geneFontSize / 10 * length($geneName);
+    if ( $txStart > $bufferedStartMb + $lenLabel ) {
+	$xLabel = $txStart - ($bufferedEndMb-$bufferedStartMb) * 0.01;
+	$xAlign = "right";
+	$xStart = $txStart - $lenLabel;
+	$xEnd = $txEnd;
+    }
+    else {
+	$xLabel = $txEnd + ($bufferedEndMb-$bufferedStartMb) * 0.01;
+	$xAlign = "left";
+	$xStart = $txStart;
+	$xEnd = $txEnd + $lenLabel;
+    }
+    my $geneIdx = 0;
+    while ( $geneIdx <= $#geneEnds ) {
+	if ( $geneEnds[$geneIdx] > $xStart ) {
+	    ++$geneIdx;
+	}
+	else {
+	    $geneEnds[$geneIdx] = $xEnd;
+	    last;
+	}
+    }
+    if ( $geneIdx > $#geneEnds ) {
+	push(@geneEnds,$xEnd);
+    }
+    $y = $yoffset+(0-$geneIdx-0.5)*$ystep;
+    my $yu = sprintf("%.3lf",$y+$ymstep);
+    my $yl = sprintf("%.3lf",$y-$ymstep);
+    my ($name,$start2,$end2) = ($genes[$i]->[0],$genes[$i]->[1],$genes[$i]->[2]);
+    print CMD "set label $nobj '$name' at $xLabel,$yu $xAlign front nopoint tc rgb '#000000' font 'GillSansMT,$geneFontSize'\n";
+    ++$nobj;
+    print CMD "set obj $nobj rect from $txStart,$yu to $txEnd,$yl fc rgb '#000000'\n";
+    ++$nobj;
+    my $nExons = $#{$genes[$i]->[3]}+1;
+    for(my $j=0; $j < $nExons; ++$j) {
+	$yu = sprintf("%.3lf",$y+$ystep/2);
+	$yl = sprintf("%.3lf",$y-$ystep/2);
+	my ($exStart,$exEnd) = ($genes[$i]->[3]->[$j]/1e6,$genes[$i]->[4]->[$j]/1e6);
+	print CMD "set obj $nobj rect from $exStart,$yu to $exEnd,$yl fc rgb '#000000'\n";
+	++$nobj;
+    }
+}
+$y = $yoffset+(0-$#geneEnds-0.5)*$ystep;
+$y = ($y < -0.5) ? ($y - $ystep) : (-0.5 - $ystep);
+print CMD "set tmargin 0\n";
+print CMD "set bmargin 5\n";
+print CMD "set yrange [$y:0]\n";
+print CMD "set ytics 0,1\n";
+print CMD "set ylabel ''\n";
+print CMD "set xlabel 'Base Positions in Chromosome $chr (Mb)' offset 0,0.5\n";
+print CMD "unset x2tics\n";
+print CMD "unset y2tics\n";
+print CMD "unset y2label\n";
+print CMD "set xtics nomirror out\n";
+print CMD "set grid x\n";
+print CMD "set xrange [$bufferedStartMb:$bufferedEndMb]\n";
+print CMD "set key box below width 2 samplen 1\n";
+#print CMD "unset key\n";
+print CMD "plot NaN with points notitle";
+for(my $i=0; $i < 3; ++$i) {
+    print CMD ", NaN with points pt 7 lc rgbcolor ".sprintf("'#%0X'",$colors[$i])." title '$legends[$i]'";
+}
+print CMD "\n";
+close CMD;
+
+my $bindir = "/net/fantasia/home/hmkang/bin/";
+my $setenv = "export GDFONTPATH=/net/fantasia/home/hmkang/lib/fonts/; export GNUPLOT_FONTPATH=/net/fantasia/home/hmkang/lib/fonts/";
+
+my $cmd = "$setenv; $bindir/gnuplot $outf.cmd";
+print STDERR "$cmd\n";
+print STDERR `$cmd`;
+
+$cmd = "$setenv; $bindir/epstopdf $outf.eps; rm $outf.cmd; rm $outf.eps";
+print STDERR "$cmd\n";
+print STDERR `$cmd`;

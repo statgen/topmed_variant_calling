@@ -1,0 +1,66 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+use wGetOptions qw(wpod2usage wGetOptions);    
+use hyunlib qw(makeMake forkExecWait zopen wopen);
+
+my $in = "";
+my $out = "";
+my $rRNAref = ""; #"/net/1000g/hmkang/etc/hojoong/ref/NR_046235.1";
+my $ref = ""; #"/net/1000g/hmkang/etc/hojoong/ref/hs37d5";
+my $proseq = "";
+my $bowtie = "/net/fantasia/home/hmkang/tools/bowtie-1.1.2/bowtie"; #"/net/fantasia/home/hmkang/down/bowtie/bowtie-1.1.2/bowtie";
+my $bwa = "/net/topmed/working/schelcj/gotcloud.csg/bin/bwa";
+my $bwaref = "/data/local/ref/gotcloud.ref/hs37d5.fa";
+my $samtools = "samtools";
+my $threads = 4;
+my $maxMem = 4000000000;
+
+wGetOptions(
+    "-Alignment pipeline for PROseq or PROcap (filter out ribosomal reads, and align with bowtie and bwa)",
+    "--Key Options",
+    "in=s" => [\$in, "Input FASTQ file to align"],
+    "out=s" => [\$out, "Output file prefix"],
+    "rRNA-ref=s" => [\$rRNAref, "Reference FASTA file for rRNA"],
+    "ref=s" => [\$ref, "Reference FASTA file for genome (for bowtie)"],
+    "bwaref=s" => [\$ref, "Reference FASTA file for genome (for bwa)"],       
+    "--Additional Options",
+    "threads=i" => [\$threads, "Number of threads for parallel processing"],
+    "bowtie=s" => [\$bowtie, "Path for bowtie binary"],
+    "bwa=s" => [\$bwa, "Path for bwa"],
+    "samtools=s" => [\$samtools, "Path for samtools"],
+    "max-mem=i" => [\$maxMem, "Maximum memory in bytes for samtools sort"],
+    ) || wpod2usage(2);
+
+if ( !$in || !$out || !$rRNAref || !$ref ) {
+    print STDERR "Missing required options : --in, --out, --rRNAref, --ref \n";
+    wpod2usage();
+}
+
+## First, filter out ribosomal RNA reads..
+my $cmd;
+
+if ( -s $bowtie ) {
+    $cmd = "zcat $in | $bowtie -v2 -m2 -p$threads --un $out.nonrib.tmp.fastq -S $rRNAref /dev/stdin /dev/stdout | $samtools view -ubh -S -F 4 /dev/stdin | $samtools sort -m$maxMem /dev/stdin $out.rib 2> $out.log";    
+    &forkExecWait($cmd);
+    
+    $cmd = "$bowtie -v2 -m2 -p$threads $ref -S $out.nonrib.tmp.fastq /dev/stdout | $samtools view -ubh -S /dev/stdin | $samtools sort -m$maxMem /dev/stdin $out.bowtie 2>> $out.log";
+    &forkExecWait($cmd);
+}
+else {
+    die "FATAL ERROR: Bowtie binary $bowtie does not exist.\n";
+}
+
+if ( -s $bwa ) {
+    $cmd = "$bwa mem -t $threads -B 4 -O 6 -E 1 -M $bwaref $out.nonrib.tmp.fastq | $samtools view -ubhS /dev/stdin | $samtools sort -m$maxMem /dev/stdin $out.bwa 2>> $out.log";
+    &forkExecWait($cmd);
+}
+else {
+    warn "WARNING: BWA binary $bwa does not exist. Skipping this step..\n";    
+}
+
+$cmd = "rm -f $out.nonrib.tmp.fastq";
+&forkExecWait($cmd);    
+

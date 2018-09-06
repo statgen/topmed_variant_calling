@@ -1,0 +1,253 @@
+#!/usr/bin/perl -w
+
+use strict;
+use POSIX qw(pow log10 sqrt);
+use FindBin;
+use lib $FindBin::Bin;
+#use lib '/net/fantasia/home/hmkang/bin/utils';
+use wGetOptions qw(wpod2usage wGetOptions);
+use hyunlib qw(zopen);
+
+my $kin0f = "";
+my $sexmapf = "";
+my $outf = "";
+my $groupf = "";
+my $dupThres = 0.4;
+my $relThres = 0.175;
+my $poThres  = 0.0035;
+my $rmOverlap = "";
+
+wGetOptions(
+    "-Identify nuclear families from KING2 output and sex map",
+    "--Required Options",
+    "kin0=s" => [\$kin0f, ".kin0 file from KING2",".kin0 file from KING2. Use options --kinship --degree 4 (or 3)"],
+    "sex=s" => [\$sexmapf, "Sex map file", "Sex map file containing the sex of each individual as ploidy of X chromosomes"],
+    "out=s" => [\$outf, "Output file", "Output file prefix"],
+    "--Additional Options",
+    "group=s" => [\$groupf, "Group file of each individual", "Group map file containing the batch information of each individual"],
+    "dup-thres=f" => [\$dupThres, "Mininumn kinship coefficient to be considered as duplicate pair"],
+    "rel-thres=f" => [\$relThres, "Mininumn kinship coefficient to be considered as 1st degree relative"],
+    "po-thres=f" => [\$poThres, "Maximum IBS0 coefficient to be considered as parent-offspring pair"],
+    "rm-overlap" => [\$rmOverlap, "Remove overlapping individuals between families"],
+    ) || wpod2usage(2);
+
+unless ( ( $kin0f ) && ( $outf ) && ( $sexmapf ) ) {
+    print STDERR "ERROR: Missing required option\n";
+    wpod2usage(2);
+}
+
+my %hsex = ();
+my %hcent = ();
+my @ids = ();
+
+my $nsex = 0;
+
+open(IN,$sexmapf) || die "Cannot open file $sexmapf\n";
+while(<IN>) {
+    my ($id,$sex) = split;
+    $hsex{$id} = $sex;
+    push(@ids,$id);
+    ++$nsex;
+}
+close IN;
+
+print STDERR "Finished reading sex information of $nsex individuals from $sexmapf\n";
+
+if ( $groupf ) {
+    my $ngrp = 0;    
+    open(IN,$groupf) || die "Cannot open file $groupf\n";
+    while(<IN>) {
+	my ($id,$group) = split;
+	$hcent{$id} = $group;
+	++$ngrp;
+    }
+    close IN;
+    print STDERR "Finished reading group information of $ngrp indiviuduals from $groupf\n";    
+}
+else {
+    foreach my $id (sort keys %hsex) {
+	$hcent{$id} = ".";
+    }
+    print STDERR "Skipping assigning group information for each individual\n";    
+}
+	     
+
+my %hrel = ();
+
+my ($ndup,$npo,$nfs,$netc) = (0,0,0,0);
+open(IN,$kin0f) || die "Cannot open file $kin0f\n";
+while(<IN>) {
+    next if ( /^FID/ );
+    my ($fid1,$id1,$fid2,$id2,$nsnp,$hethet,$ibs0,$kin) = split;    
+    
+    my $rel = "ETC";
+    if ( $kin > $dupThres ) { $rel = "DUP"; ++$ndup; }
+    elsif ( ( $kin >$relThres )&& ( $ibs0 < $poThres ) ) { $rel = "PO"; ++$npo; }
+    elsif ( $kin > $relThres ) { $rel = "FS"; ++$nfs; }
+    else { ++$netc; }
+
+    $hrel{$id1}{$id2} = $rel;
+    $hrel{$id2}{$id1} = $rel;        
+}
+close IN;
+
+print STDERR "Finished reading pairwise relationship of $ndup duplicates, $npo parent-offsprings, $nfs full-siblings, and $netc other relationships\n";
+
+
+my %hpar = ();
+my %hfam = ();
+my %hdup = ();
+my %hkid = ();
+
+## First, search for only dups
+foreach my $id (@ids) { $hdup{$id} = [$id]; }
+    
+foreach my $id (@ids) {
+    my $r = $hrel{$id};
+    my @others = sort keys %{$r};
+    foreach my $other (@others) {
+	my $rel = $hrel{$id}{$other};
+	if ( $rel eq "DUP" ) {
+	    my @newdups = sort(uniq(@{$hdup{$id}},@{$hdup{$other}}));
+	    foreach my $dup (@newdups) {
+		$hdup{$dup} = \@newdups;
+	    }
+	}
+    }
+}
+
+## Second, seach for parents
+foreach my $id (@ids) {
+    my $r = $hrel{$id};
+    my @others = sort keys %{$r};
+    next unless ( $hdup{$id}->[0] eq $id );  ## skip redundancies in duplicates
+    
+    my @POs = ();
+    foreach my $other (@others) {
+	my $rel = $hrel{$id}{$other};
+	if ( $rel eq "PO" ) {
+	    next unless ( $hdup{$other}->[0] eq $other );  ## skip redundancies in duplicates	    
+	    push(@POs,$other);
+	}
+    }
+
+    my $dad;
+    my $mom;
+    
+    for(my $i=0; $i < @POs; ++$i) {
+	for(my $j=0; $j < $i; ++$j) {
+	    unless ( defined($hrel{$POs[$i]}{$POs[$j]}) ) {
+		if ( defined($dad) || defined($mom) ) {
+		    die "ERROR: for kid $id, parents are already found [$dad,$mom], but another pairs [".join(",",$POs[$i],$POs[$j])."] were found too \n";
+		    next;
+		}
+		
+		if ( $hsex{$POs[$i]} < $hsex{$POs[$j]} ) {
+		    $dad = $POs[$i];
+		    $mom = $POs[$j];
+		}
+		elsif ( $hsex{$POs[$i]} > $hsex{$POs[$j]} ) {
+		    $dad = $POs[$j];
+		    $mom = $POs[$i];		    
+		}
+		else {
+		    die "ERROR: for kid $id, parents are inferred to be [$POs[$i],$POs[$j]], but their sexes are [".join(",",$hsex{$POs[$i]},$hsex{$POs[$j]})."]\n";
+		}
+	    }
+	}
+    }
+
+    if ( defined($dad) && defined($mom) ) { ## check if the dad or mom is already involved in other families
+	#print STDERR "$dad $mom $id\n";
+	
+	next if ( defined($hpar{$dad}) && ( $hpar{$dad} ne $mom ) );
+	$hfam{"$dad:$mom"} = [] unless ( defined($hfam{"$dad:$mom"}) );
+	push(@{$hfam{"$dad:$mom"}},$id);
+	#print "$id\t$dad\t$mom\n";
+	$hpar{$dad} = $mom;
+	$hpar{$mom} = $dad;
+	$hkid{$id} = 1;
+    }
+}
+
+## Remove any possible overlaps in families
+if ( $rmOverlap ) {
+    my %hobs = ();
+    my @toremove = ();
+    foreach my $dadmom (sort keys %hfam) {
+	my @mids = split(/:/,$dadmom);
+	push(@mids,@{$hfam{$dadmom}});
+	my $remove = 0;
+	foreach my $mid (@mids) {
+	    if ( defined($hobs{$mid}) ) { ++$remove; }
+	    $hobs{$mid} = 1;
+	}
+	if ( $remove > 0 ) {
+	    push(@toremove,$dadmom);
+	}
+    }
+    print STDERR "Removing ".($#toremove+1)." families with partial overlaps...\n";
+    foreach my $dadmom (@toremove) {
+	delete $hfam{$dadmom};
+    }
+}
+
+
+open(PED,">$outf") || die "Cannot open file $outf for writing\n";
+
+## print each family first
+foreach my $dadmom (sort keys %hfam) {
+    my ($dad,$mom) = split(/:/,$dadmom);
+    next if ( defined($hkid{$dad}) || defined($hkid{$mom}) );
+    my @kids = @{$hfam{$dadmom}};
+    my $fid = "$dad\_$mom";
+    my @cents = ();
+    
+    foreach my $id (@{$hdup{$dad}}) {
+	push(@cents,$hcent{$id});
+    }
+    foreach my $id (@{$hdup{$mom}}) {
+	push(@cents,$hcent{$id});
+    }    
+    foreach my $kid (@kids) {
+	foreach my $id (@{$hdup{$kid}}) {
+	    push(@cents,$hcent{$id});
+	}    	
+    }
+    my $centSuffix = join("_",sort(uniq(@cents)));
+    if ( $centSuffix ne "." ) {
+	$fid .= "-$centSuffix";
+    }
+
+    print PED join("\t",$fid,join(",",@{$hdup{$dad}}),0,0,1,-9)."\n";
+    print PED join("\t",$fid,join(",",@{$hdup{$mom}}),0,0,2,-9)."\n";
+    foreach my $kid (@kids) {
+	print PED join("\t",$fid,join(",",@{$hdup{$kid}}),$dad,$mom,$hsex{$kid},-9)."\n";	
+    }
+}
+
+## print remaining duplicates
+foreach my $id (sort keys %hdup) {
+    next unless ( $#{$hdup{$id}} > 0 );
+    next if ( defined($hkid{$id}) || defined($hpar{$id}) );
+    next if ( $id ne $hdup{$id}->[0] );
+
+    my @cents = ();    
+    foreach my $id2 (@{$hdup{$id}}) {
+	push(@cents,$hcent{$id2});
+    }
+    my $fid = $id;
+    my $centSuffix = join("_",sort(uniq(@cents)));
+    if ( $centSuffix ne "." ) {
+	$fid .= "-$centSuffix";
+    }    
+    #my $fid = "$id-".join("_",uniq(@cents));
+    
+    print PED join("\t",$fid,join(",",@{$hdup{$id}}),0,0,1,-9)."\n";    
+}
+close PED;
+
+sub uniq {
+    my %seen;
+    return grep { !$seen{$_}++ } @_;    
+}

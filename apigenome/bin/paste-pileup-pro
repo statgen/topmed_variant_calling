@@ -1,0 +1,140 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+use wGetOptions qw(wpod2usage wGetOptions);    
+use hyunlib qw(makeMake forkExecWait zopen wopen initRef %hszchrs @achrs);
+
+my $listf = "";
+my $ref = "/data/local/ref/gotcloud.ref/hs37d5.fa";
+my $win = 1000;
+my $step = 500;
+my $region = "";
+my $method = "min"; ## geom.mean
+my $tabix = "tabix";
+my $out = "";
+
+wGetOptions(
+    "-Calculate the pileup of the PROcap/seq reads",
+    "--Key Options",
+    "list=s" => [\$listf, "Index file containing sample ID and BED file generated from pileup-pro"],
+    "out=s" => [\$out, "Output file prefix"],
+    "--Additional Options",    
+    "tabix=s" => [\$tabix, "Path for tabix binary"],
+    "win=s" => [\$win, "Window size to summarize the values"],
+    "step=s" => [\$step, "Step size of tiling windows"],
+    "method=s" => [\$method, "Method to calculate the TSS levels"],
+    ) || wpod2usage(2);
+
+if ( !$listf || !$out ) {
+    print STDERR "Missing required options : --list, --out \n";
+    wpod2usage();
+}
+
+my @ids = ();
+my @bedfs = ();
+open(IN,$listf) || die "Cannot open file\n";
+while(<IN>) {
+    my ($id,$bedf) = split;
+    push(@ids,$id);
+    push(@bedfs,$bedf);
+}
+close IN;
+
+my @chrs = ();
+my @begs = ();
+my @ends = ();
+
+if ( $region ) {
+    my ($chr,$beg,$end) = split(/[:\-]/,$region);
+    die "Cannot find chromosome $chr\n" unless ( defined($hszchrs{$chr}) );
+    unless ( defined($beg) ) {
+	$beg = 0;
+    }
+    unless ( defined($end) ) {
+	$end = $hszchrs{$chr}->[3];
+    }
+    push(@chrs,$chr);
+    push(@begs,$beg);
+    push(@ends,$end);
+}
+else {
+    &initRef($ref);
+    foreach my $chr (@achrs) {
+	#print STDERR "$chr\n";
+	if ( $chr =~ /^(chr)?[\dXY]+$/ ) {
+	    push(@chrs,$chr);
+	    push(@begs,0);
+	    push(@ends,$hszchrs{$chr}->[3]);
+	} 
+    }
+}
+
+print STDERR "Analysis started at ".scalar(localtime)."\n";
+
+my %hcnts = ();
+
+## read each file and keep all information in the memory(!)
+for(my $i=0; $i < @ids; ++$i) {
+    my $id = $ids[$i];
+    my $bedf = $bedfs[$i];
+
+    print STDERR "Processing sample $id / file $bedf at ".scalar(localtime)."\n";
+
+    die "Cannot open $bedf\n" unless ( -s $bedf );
+
+    for(my $j=0; $j < @chrs; ++$j) {
+	print STDERR "Processing chromosome $chrs[$j] at ".scalar(localtime)."\n";	
+	open(IN,"$tabix $bedf $chrs[$j]:$begs[$j]-$ends[$j]|");
+	while(<IN>) {
+	    my ($chr,$beg,$end,$max,$upl,$pl,$umn,$mn) = split;
+
+	    ## if the window size is win=1000, and step size is 200
+	    ## 5185 belongs to
+	    ## 4800-5800
+	    ## 5000-5000
+	    my $bin = int($beg/$step)*$step;
+	    while( ( $bin > 0 ) && ( $bin + $win > $end ) ){
+		my $key = sprintf("%d.%09d",$j,$bin);
+		unless ( defined($hcnts{$key}) ) {
+		    my @zeros = (0) x (2 * ($#ids+1));
+		    $hcnts{$key} = \@zeros;
+		}
+		$hcnts{$key}->[$i*2] += $upl;
+		$hcnts{$key}->[$i*2+1] += $umn;		
+		$bin -= $step;
+	    }
+	}
+	close IN;
+    }
+}
+
+open(OUT1,"| bgzip -c > $out.$method.bed.gz") || die "Cannot open file\n";
+open(OUT2,"| bgzip -c > $out.full.bed.gz") || die "Cannot open file\n";
+print OUT1 join("\t","#CHROM","BEG","END",@ids)."\n";
+print OUT2 join("\t","#CHROM","BEG","END",@ids)."\n";
+foreach my $key (sort {$a <=> $b} %hcnts) {
+    my ($ichr,$bin) = split(/\./,$key);
+    die $key unless (defined($bin));
+    $bin =~ s/^0+//;
+    print OUT1 join("\t",$chrs[$ichr],$bin,$bin+$win);
+    print OUT2 join("\t",$chrs[$ichr],$bin,$bin+$win);
+    my @v = @{$hcnts{$key}};
+    for(my $i=0; $i < @ids; ++$i) {
+	if ( $method eq "min" ) {
+	    print OUT1 "\t";
+	    print OUT1 ($v[2*$i] > $v[2*$i+1] ? $v[2*$i+1] : $v[2*$i]);
+	}
+	elsif ( $method eq "geom.mean" ) {
+	    print OUT1 "\t";
+	    print OUT1 sprintf("%.2f",sqrt($v[2*$i]*$v[2*$i+1]));
+	}
+	print OUT2 "\t".join(",",$v[2*$i],$v[2*$i+1]);
+    }
+    print OUT1 "\n";
+    print OUT2 "\n";    
+}
+close OUT1;
+close OUT2;
+

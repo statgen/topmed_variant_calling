@@ -1,0 +1,89 @@
+#!/usr/bin/perl -w
+
+use strict;
+use POSIX qw(pow log10 sqrt);
+use FindBin;
+use lib $FindBin::Bin;
+#use lib '/net/fantasia/home/hmkang/bin/utils';
+use wGetOptions qw(wpod2usage wGetOptions);
+use hyunlib qw(zopen);
+
+my $fasta = "";
+my $region = "";
+my $outf = "";
+my $samtools = "samtools";
+my $maxdel = 10;
+my $maxshift = 50;
+
+wGetOptions(
+    "-Identify nuclear families from KING2 output and sex map",
+    "--Required Options",
+    "fasta=s" => [\$fasta, "Fasta file with fasta index"],
+    "region=s" => [\$region,  "Genomic region to focus on"],
+    "out=s" => [\$outf, "Output file", "Output file prefix"],
+    "--Additional Options",
+    "samtools=s" => [\$samtools, "Samtools binary path"],
+    "max-del=i" => [\$maxdel, "Maximum deletion length"],
+    "max-shift=i" => [\$maxshift, "Maximum shift distance"],        
+    ) || wpod2usage(2);
+
+unless ( ( $fasta ) && ( $region ) && ( $outf ) ) {
+    print STDERR "ERROR: Missing required option\n";
+    wpod2usage(2);
+}
+
+my @s = ();
+
+my ($chr,$beg,$end) = split(/[:-]/,$region);
+#if ( defined($beg) ) { $beg -= $maxshift; }
+#else { $beg = 0; for(my $i=0; $i < $maxshift; ++$i) { push(@s,"N"); } }
+#if ( defined($end) ) { $end += $maxshift; }
+#else { $end = 1000000000; }
+
+open(FASTA,"$samtools faidx $fasta $chr:$beg-$end|") || die "Cannot open file\n";
+while(<FASTA>) {
+    next if ( /^>/ );
+    chomp;
+    my @a = split(//);
+    push(@s,@a);
+}
+
+my $l = $#s+1;
+my @cnts = (0) x (($maxdel+1) * (2*$maxshift+1));
+my %hcnts = ();
+for(my $i=0; $i < $l; ++$i) {
+    next if ( $s[$i] eq "N" );
+    for(my $j=1; $j <= $maxdel; ++$j) { ## deletion length
+	## looking at substring $i..$i+$j
+	next if ( $i + $j >= $l );
+	my $key = join("",@s[$i..($i+$j-1)]);
+	my $k = 0;
+	while( ( $k < $maxshift ) && ( $i > $k ) && ( $s[$i-1-$k] eq $s[$i + $j - 1 - ($k % $j)]) ) { ++$k; }
+	my $m = 0;
+	while( ( $m < $maxshift ) && ( $i + $j + $m < $l ) && ( $s[$i+$j+$m] eq $s[$i + ($m % $j)]) ) { ++$m; }
+	#print join("\t",$i,$j,$k,$m)."\n";
+	++$cnts[$j*(2*$maxshift+1)+($k+$m)];
+	unless ( defined($hcnts{$key}) ) {
+	    my @a = (0) x (2*$maxshift+1);
+	    $hcnts{$key} = \@a;
+	}
+	++($hcnts{$key}->[$k+$m]);
+    }
+}
+
+open(OUT,">$outf.size.dist") || die "Cannot open file\n";
+for(my $i=1; $i <= $maxdel; ++$i) {
+    print OUT $i;
+    for(my $j=0; $j <= 2*$maxshift; ++$j) {
+	print OUT "\t".$cnts[$i*(2*$maxshift+1)+$j];
+    }
+    print OUT "\n";
+}
+close OUT;
+
+open(OUT,">$outf.allele.dist") || die "Cannot open file\n";
+foreach my $key (sort keys %hcnts) {
+    print OUT join("\t",$key,@{$hcnts{$key}})."\n";
+}
+close OUT;
+

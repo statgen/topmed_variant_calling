@@ -1,0 +1,82 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+use lib "/net/fantasia/home/hmkang/bin/utils/";
+use hyunlib qw(initRef getCpGs);
+use wGetOptions qw(wGetOptions wpod2usage);
+
+my $region = "";
+my $fbin = "";
+my $bedf = "";
+my $avg = "";
+
+## Parse options and print usage if there is a syntax error,
+## or if usage was explicitly requested.
+wGetOptions(
+    "-Lookup (legacy) FBIN format to look up scores",
+    "--Required Options",
+    "reg=s" => [\$region, "Region in [chr]:[beg1]-[end1]"],
+    "bed=s" => [\$bedf, "Regions in BED format"],     
+    "fbin=s" => [\$fbin, "Directory containing fbin files"],
+    "avg" => [\$avg, "Print average per region"]
+    ) || wpod2usage(2);
+
+wpod2usage("(--reg or --bed), --fbin and are required") unless ( ( ( $region ) || ( $bedf ) ) && ( $fbin ) );
+
+## open FBIN files
+if ( $bedf ) {
+    open(BED,$bedf) || die "Cannot open $bedf\n";
+    my $prevchr = "";
+    while(<BED>) {
+	my ($chr,$beg0,$end1) = split;
+	$chr = "chr$chr" unless ( $chr =~ /^chr/ );
+	if ( $prevchr ne $chr ) {
+	    close FBIN if ( $prevchr );
+	    open(FBIN,"$fbin/$chr.fbin") || die "Cannot open $fbin/$chr.fbin\n";
+	    $prevchr = $chr;
+	}
+	seek(FBIN,$beg0*4,0);
+	my $n = $end1-$beg0;
+	read(FBIN,my $buf,4*$n);
+	die "Cannot read $n float numbers from $fbin/$chr.$fbin from $chr:".($beg0+1)."\n" if ( length($buf) ne 4*$n );
+
+	my @scores = unpack("f$n",$buf);
+	if ( $avg ) {
+	    my $sum = 0;
+	    foreach my $s (@scores) { $sum += $s; }
+	    printf("$chr:".($beg0+1)."-$end1\t%.g\n",$sum/$n);
+	}
+	else {
+	    for(my $i=0; $i < @scores; ++$i) {
+		printf("$chr:%d\t%.g\n",$beg0+1+$i,$scores[$i]);
+	    }
+	}	
+    }
+    close BED;
+    close FBIN;
+}
+else {
+    my ($chr,$beg1,$end1) = split(/[:\-]/,$region);
+    $chr = "chr$chr" unless ( $chr =~ /^chr/ );    
+    die unless ( defined($end1) );
+    open(FBIN,"$fbin/$chr.fbin") || die "Cannot open $fbin/$chr.fbin\n";
+    #my $score = "nan";
+    seek(FBIN,($beg1-1)*4,0);
+    my $n = $end1-$beg1+1;
+    read(FBIN,my $buf,4*$n);
+    close FBIN;
+    die "Cannot read $n float numbers from $fbin/$chr.$fbin from $chr:$beg1\n" if ( length($buf) ne 4*$n );
+    my @scores = unpack("f$n",$buf);
+    if ( $avg ) {
+	my $sum = 0;
+	foreach my $s (@scores) { $sum += $s; }
+	printf("$chr:$beg1-$end1\t%.5lg\n",$sum/$n);
+    }
+    else {
+	for(my $i=0; $i < @scores; ++$i) {
+	    printf("$chr:%d\t%.5lg\n",$beg1+$i,$scores[$i]);
+	}
+    }
+}

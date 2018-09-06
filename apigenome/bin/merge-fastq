@@ -1,0 +1,39 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+use wGetOptions qw(wpod2usage wGetOptions);    
+use hyunlib qw(makeMake forkExecWait zopen wopen);
+
+my $prefix = "";
+my $suffix = "";
+my $out = "";
+
+wGetOptions(
+    "-Demultiplex FASTQ files based on barcode information",
+    "--Key Options",
+    "prefix=s" => [\$prefix, "Prefix of numbered FASTQ files"],
+    "suffix=s" => [\$suffix, "Prefix of numbered FASTQ files"],    
+    "out=s" => [\$out, "Output prefix"],
+    ) || wpod2usage(2);
+
+if ( !$prefix || !$suffix ) {
+    print STDERR "Missing required options : --prefix, --suffix\n";
+    wpod2usage();
+}
+
+$out = $prefix."merged".$suffix unless ( $out );
+
+open(OUT,"| gzip -c > $out") || die "Cannot open file\n";
+for(my $i=1; $i < 1000; ++$i) {
+    my $in = sprintf("%s%03d%s",$prefix,$i,$suffix);
+    last unless ( -s $in );
+    print STDERR "Processing $in..\n";
+    open(IN,"zcat $in |") || die "Cannot open file\n";
+    while(<IN>) {
+	print OUT;
+    }
+    close IN;
+}
+close OUT;

@@ -1,0 +1,153 @@
+#!/usr/bin/perl -w
+
+use strict;
+use POSIX qw(strftime);
+use FindBin;
+use lib $FindBin::Bin;
+use wGetOptions qw(wpod2usage wGetOptions);
+use hyunlib qw(wopen);
+
+my $bam = "";
+my $sizeFlag = 1;
+my $baiFlag = 1;
+my $eofFlag = 1;
+my $nRGFlag = 1;
+my $smFlag = 1;
+my $dateFlag = 1;
+my $timestampFlag = 1;
+my $totalFlag = 1;
+my $out = "-";
+my $samtools = "samtools";
+
+wGetOptions(
+    "-Print basic information of a BAM file",
+    "-This software examines BAM files and produce basic statistics, such as (1) size of BAM files, (2) existence of index file, (3) exitence of EOF marker (4) number of readGroups, (5) sample ID, (6) date of sequencing, (7) Timestamp of BAM files, and (8) Summary of error messages",
+    "--Required Options",
+    "bam=s" => [\$bam, "File path of the BAM files"],
+    "--Additional Options",
+    "out=s" => [\$out, "File path of output file ('-' if STDOUT)"],    
+    "samtools=s" => [\$samtools, "File path of samtools binary file"],
+    "size=s"=> [\$sizeFlag, "Toggle the option for file size checking"],
+    "bai=s"=> [\$baiFlag, "Toggle the option for BAM index (.bai) checking"],
+    "rg=s"=> [\$nRGFlag, "Toggle the option to check the number of readgroups"],
+    "sm=s"=> [\$smFlag, "Toggle the option to print the sample ID"],
+    "date=s"=> [\$dateFlag, "Toggle the option to print the latest sequencing date (from RG tag)"],
+    "eof=s"=> [\$eofFlag, "Toggle the option for EOF (end-of-file) marker checking"],            
+    "timestamp=s"=> [\$timestampFlag, "Toggle the option to print the timestamp of the BAM file"],
+    "summary=s"=> [\$totalFlag, "Toggle the option to print the summary of error messages"],        
+    ) || wpod2usage(2);
+
+unless ( $bam ) {
+    print STDERR "ERROR: Missing required option\n";
+    wpod2usage(2);
+}
+
+my $fh = wopen($out);
+
+my @hdrs = ();
+my @vals = ();
+
+push(@hdrs,"BAM_FILE");
+push(@vals,$bam);
+
+my $sz = (-s $bam);
+if ( $sizeFlag ) {
+    push(@hdrs,"BAM_SIZE_GB");
+    push(@vals,$sz > 0 ? sprintf("%.3lf",$sz/1e9) : 0);
+}
+
+if ( $baiFlag ) {
+    push(@hdrs,"BAM_INDEX");
+    push(@vals, ( -s "$bam.bai") ? "FOUND_BAI" : "NO_BAI");
+}
+
+#die "Cannot find samtools binary $samtools\n" unless ( -s $samtools ) || ( 
+
+my $nRG = 0;
+my $SM = "";
+my $DT = "";
+my $eof = "EOF_PRESENT";
+my @errs = ();
+if ( $sz ) {
+    open(IN,"$samtools view -H $bam 2>&1 |") || die "Cannot open file with $samtools\n";
+    while(<IN>) {
+	if ( /^\@/ ) {
+	    if ( /^\@RG/ ) {
+		if ( /SM:(\S+)/ ) {
+		    if ( $SM ) {
+			push(@errs,"ERROR_INCONSISTENT_SM") unless ( $SM eq $1 );
+		    }
+		    else {
+			$SM = $1;			
+		}
+		}
+		if ( /DT:(\S+)/ ) {
+		    if ( $DT ) {
+			$DT = $1 if ( $1 ge $DT )
+		    }
+		    else {
+			$DT = $1;			
+		    }		    
+		}
+		++$nRG;
+	    }
+	}
+	elsif ( /EOF/ ) {
+	    $eof = "EOF_ABSENT";
+	    push(@errs,"EOF_ABSENT");
+	}
+    }
+}
+else {
+    $SM = "NO_SM";    
+    $DT = "NO_DT";
+    $eof = "EOF_ABSENT";
+    push(@errs,"EOF_ABSENT");    
+}
+
+if ( $nRGFlag ) {
+    push(@hdrs,"RG_COUNT");
+    push(@vals,$nRG);
+}
+
+if ( $smFlag ) {
+    push(@hdrs, "SAMPLE_ID");
+    push(@vals, $SM ? $SM : "NO_SM");
+    push(@errs, "NO_SM") unless ( $SM );
+}
+
+if ( $dateFlag ) {
+    push(@hdrs, "SEQ_DATE");    
+    push(@vals, $DT ? $DT : "NO_DT");
+}
+
+if ( $eofFlag ) {
+    push(@hdrs,"EOF_MARKER");
+    push(@vals,$eof);
+}
+
+if ( $timestampFlag ) {
+    my $timestamp = "NO_TIMESTAMP";
+    if ( $sz ) {
+	my $modtime = (stat($bam))[9];
+	$timestamp = strftime("%Y-%m-%dT%H:%M:%S",localtime($modtime));
+	#print STDERR "\n$modtime\n";
+    } 
+    push(@hdrs,"BAM_FILESTAMP");
+    push(@vals,$timestamp);    
+}
+
+if ( $totalFlag ) {
+    push(@hdrs,"SUMMARY_ERRORS");
+    if ( $sz ) {
+	push(@vals,$#errs < 0 ? "NO_ERROR" : join(',',@errs));
+    }
+    else {
+	push(@vals,"ERROR_EMPTY");
+    }
+}
+
+print {$fh} "#".join("\t",@hdrs)."\n";
+print {$fh} join("\t",@vals)."\n";
+
+close $fh;

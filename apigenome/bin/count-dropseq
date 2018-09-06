@@ -1,0 +1,153 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+use wGetOptions qw(wpod2usage wGetOptions);    
+use hyunlib qw(makeMake forkExecWait zopen wopen loadGTF);
+
+my $bam = "";
+my $out = "";
+my $samtools = "samtools";
+my $gtf = "/net/1000g/hmkang/data/ref/hs37d5_mm10/gencode.human_v19_mouse_vM6.annotation.gtf";
+my $Rscript = "Rscript";
+my $minMQ = 20;
+my $maxCell = 3000;
+my $unit = 1000;
+my $numjobs = 50;
+my $bclen = 12;
+my $bcmap = "";
+
+wGetOptions(
+    "-Count digital expressions from DropSeq BAMs",
+    "--Key Options",
+    "bam=s" => [\$bam, "BAM file"],
+    "out=s" => [\$out, "Output file prefix"],
+    "--Additional Options",
+    "samtools=s" => [\$samtools, "Path to the binary of samtools"],    
+    "gtf=s" => [\$gtf, "Path to the transcript GTF file"],
+    "maxCell=s" => [\$maxCell, "Maximum cell counts"],
+    "min-mq=i" => [\$minMQ, "Minimum mapping quality"],
+    "barcode-length=i" => [\$bclen, "Barcode length to trim to"],
+    "barcode-map=s" => [\$bcmap, "Barcode map file"],            
+    "numjobs=i" => [\$numjobs, "Number of parallel jobs to run"],                
+    ) || wpod2usage(2);
+
+if ( !$bam || !$out ) {
+    print STDERR "Missing required options : --bam --out\n";
+    wpod2usage();
+}
+
+print STDERR "Loading $gtf..\n";
+
+my ($rhg,$rht) = &loadGTF($gtf);
+
+print STDERR "Finished loading $gtf..\n";
+
+my $tcnt = 0;
+my @tids = sort keys %{$rht};
+
+my $batch = 0;
+mkdir("$out.transcripts");
+my @outrs = ();
+my @outcs = ();
+for(my $i=0; $i < @tids; ++$i) {
+    if ( $i % $unit == 0 ) {
+	close OUT if ( $i > 0 );
+	my $outf = "$out.transcripts/".sprintf("%04d",($i/$unit)).".txt";
+	push(@outrs,$outf);
+	open(OUT,">$outf") || die "Cannot open file\n";
+    }
+    my ($chr,$beg,$end,$frame,$rexon,$rcds,$rstart,$rstop,$rutr,$gid) = @{$rht->{$tids[$i]}};
+    my @exons = @{$rexon};
+    for(my $j=0; $j < @exons; ++$j) {
+	$exons[$j] = "$chr:$exons[$j]";
+    }
+    print OUT join("\t",$rhg->{$gid}->[4], $tids[$i], $chr, $beg, $end, @exons)."\n";
+}
+close OUT;
+
+my @cmds = ();
+foreach my $outf (@outrs) {
+    my $outc = $outf;
+    $outc =~ s/\.txt$/.out/;
+    push(@cmds,"$FindBin::Bin/count-dropseq-unit --bam $bam --genef $outf --out $outc --samtools $samtools --min-mq $minMQ --barcode-length $bclen".($bcmap ? " --barcode-map $bcmap" : ""));
+    push(@outcs,$outc);
+}
+
+&makeMake("$out.tmp","",@cmds);
+&forkExecWait("make -f $out.tmp.Makefile -j $numjobs");
+&forkExecWait("cat $out.transcripts/*.out > $out.tcounts");
+&forkExecWait("rm -rf $out.tmp.Makefile $out.tmp $out.transcripts");
+
+print STDERR "Identifying $maxCell barcode with largest number of mapped transcripts...\n";
+my %hbcd = ();
+open(IN,"$out.tcounts") || die "Cannot open file\n";
+while(<IN>) {
+    print STDERR "Processing $. transcripts..\n" if ( $. % 50000 == 0 );    
+    my ($name,$tid,$chr,$beg,$end,@F) = split;
+    foreach my $f (@F) {
+	my ($bcd) = split(/:/,$f);
+	$hbcd{$bcd} = 0 unless ( defined($hbcd{$bcd}) );
+	++$hbcd{$bcd};
+    }
+}
+close IN;
+
+my @sbcd = sort{ $hbcd{$b} <=> $hbcd{$a} } keys %hbcd;
+splice(@sbcd,$maxCell);
+
+print STDERR "Creating digital expression matrix $out.exprs\n";
+
+open(OUT,">$out.exprs") || die "Cannot open file\n";
+print OUT join("\t","GENE_NAME","TRANSCRIPT_ID","CHROM","BEG","END",@sbcd)."\n";
+
+my %cntHM = ();
+
+open(IN,"$out.tcounts") || die "Cannot open file\n";
+while(<IN>) {
+    print STDERR "Processing $. transcripts..\n" if ( $. % 50000 == 0 );
+    my ($gname,$tid,$chr,$beg,$end,@F) = split;
+    print OUT join("\t",$gname,$tid,$chr,$beg,$end);
+    my %htmp = ();
+    foreach my $f (@F) {
+	my ($bcd,$ucnt) = split(/:/,$f);
+	$htmp{$bcd} = $ucnt;
+    }
+
+    foreach my $bcd (@sbcd) {
+	if ( defined($htmp{$bcd}) ) {
+	    $cntHM{$bcd} = [0,0] unless ( defined($cntHM{$bcd}) );
+	    if ( $chr =~ /^HUMAN/ ) {
+		++($cntHM{$bcd}->[0]);
+	    }
+	    elsif ( $chr =~ /^MOUSE/ ) {
+		++($cntHM{$bcd}->[1]);		
+	    }
+						      
+	    print OUT "\t".$htmp{$bcd};
+	}
+	else {
+	    print OUT "\t0";
+	}
+    }
+    print OUT "\n";
+    
+}
+close IN;
+close OUT;
+
+open(DAT,">$out.HumanMouse.dat") || die "Cannot open file\n";
+foreach my $bcd (sort keys %cntHM) {
+    print DAT join("\t",$bcd,@{$cntHM{$bcd}})."\n";
+}
+close DAT;
+
+open(R,">$out.HumanMouse.r") || die "Cannot open file\n";
+print R "df <- read.table('$out.HumanMouse.dat')\n";
+print R "pdf(file='$out.HumanMouse.pdf',width=8,height=6)\n";
+print R "plot(df[,2]+1,df[,3]+1,xlab='(Number of mapped human transcripts)+1',ylab='(Number of mapped mouse transcripts)+1',log='xy')\n";
+print R "dev.off()\n";
+close R;
+
+&forkExecWait("Rscript $out.HumanMouse.r");

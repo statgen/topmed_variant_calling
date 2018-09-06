@@ -1,0 +1,233 @@
+#!/usr/bin/perl -w
+
+use strict;
+#use Getopt::Long;
+#use lib "/net/fantasia/home/hmkang/bin/utils/";
+use FindBin;
+use lib $FindBin::Bin;
+use hyunlib qw(forkExecWait);
+use wGetOptions qw(wpod2usage wGetOptions);
+use warnings;
+
+my @summaries = @ARGV;
+
+die "Usage [program] [summary1] [summary2] ...\n" if ( $#ARGV < 0 );
+
+my %hcnts = ();
+my %hicnts = ();
+
+foreach my $file (@summaries) {
+    print STDERR "Reading $file\n";
+    open(IN,$file) || die "Cannot open file\n";
+    my $line = <IN>;
+    die "Summary file $file does not start with --\n" unless ( $line =~ /^\-\-/ );
+    $line = <IN>;
+    if ( $line =~ /SNP SUMMARY/ ) {
+	$line = <IN>;
+	$line = <IN>;	
+    }
+    $line = <IN>;
+    $line = <IN>;    
+    die "Summary file $file does not start with --\n" unless ( $line =~ /^\-\-/ );
+    while(<IN>) {
+	s/^\s+//;
+	last if ( /^\-\-/ );
+	my ($filt,$tot,$dbsnp,$indb,$kcpg,$ncpg,$ktstv,$ntstv,$kntstv,$nntstv,$hm3,$hm3p) = split;
+	$indb = 0 if ( $indb eq "NA" );
+	$kcpg = 0 if ( $kcpg eq "NA" );
+	$ncpg = 0 if ( $ncpg eq "NA" );
+	$ktstv = 0 if ( $ktstv eq "NA" );
+	$ntstv = 0 if ( $ntstv eq "NA" );
+	$kntstv = 0 if ( $kntstv eq "NA" );
+	$nntstv = 0 if ( $nntstv eq "NA" );
+
+	#if ( $filt =~ /SVM/ ) { $filt = "SVM"; }
+	#elsif ( $filt =~ /PASS/ ) { $filt = "PASS"; }
+	#else { $filt = "overlap"; }
+
+	$hcnts{$filt} = [0,0,0,0,0,0,0,0,0,0,0] unless ( defined($hcnts{$filt}) );
+	my $r = $hcnts{$filt};
+
+	$r->[0] += $tot;
+	$r->[1] += $dbsnp;
+	$r->[2] += ($dbsnp * ($ktstv / (1+$ktstv)));
+	$r->[3] += ($dbsnp * (1 / (1+$ktstv)));
+	$r->[4] += (($tot-$dbsnp) * ($ntstv / (1+$ntstv)));
+	$r->[5] += (($tot-$dbsnp) * (1 / (1+$ntstv)));
+	$r->[6] += ($dbsnp * (1- $kcpg / 100) * ($kntstv / (1+$kntstv)));
+	$r->[7] += ($dbsnp * (1- $kcpg / 100) * (1 / (1+$kntstv)));
+	$r->[8] += (($tot-$dbsnp) * (1 - $ncpg / 100) * ($nntstv / (1+$nntstv)));
+	$r->[9] += (($tot-$dbsnp) * (1 - $ncpg / 100) * (1 / (1+$nntstv)));
+	$r->[10] += ($hm3 * $tot / 100);
+	print STDERR "$filt\t$tot\n";
+    }
+
+    while ( $line && !( $line =~ /INDEL SUMMARY/ ) ) {
+	$line = <IN>;
+    }
+    if ( $line =~ /INDEL SUMMARY/ ) {
+	$line = <IN>;
+	$line = <IN>;
+	$line = <IN>;
+	die "Summary file $file does not start with --\n" unless ( $line =~ /^\-\-/ );
+
+	while(<IN>) {
+	    s/^\s+//;
+	    last if ( /^\-\-/ );
+	    my ($filt,$tot,$dbsnp,$indb) = split;
+	    $indb = 0 if ( $indb eq "NA" );
+
+	    $hicnts{$filt} = [0,0] unless ( defined($hicnts{$filt}) );
+	    my $r = $hicnts{$filt};
+	    
+	    $r->[0] += $tot;
+	    $r->[1] += $dbsnp;	    
+	}
+    }	
+    close IN;    
+}
+
+my $pass = "PASS";
+
+my %mcnts = ();
+foreach my $key (sort keys %hcnts) {
+    my $s = $hcnts{$key};    
+    my @filts = split(/;/,$key);
+    my $passfail = ( ( $key =~ /$pass;/ ) || ( $key eq $pass ) ) ? "PASS" : "FAIL";
+    foreach my $filt (@filts) {
+	$filt = "$filt;$passfail";
+	$mcnts{$filt} = [0,0,0,0,0,0,0,0,0,0,0] unless ( defined($mcnts{$filt}) );
+	my $r = $mcnts{$filt};
+	for(my $i=0; $i < 11; ++$i) {
+	    $r->[$i] += $s->[$i];
+	}
+    }
+}
+
+my %micnts = ();
+foreach my $key (sort keys %hicnts) {
+    my $s = $hicnts{$key};    
+    my @filts = split(/;/,$key);
+    my $passfail = ( ( $key =~ /$pass;/ ) || ( $key eq $pass ) ) ? "PASS" : "FAIL";    
+    foreach my $filt (@filts) {
+	$filt = "$filt;$passfail";	
+	$micnts{$filt} = [0,0] unless ( defined($micnts{$filt}) );
+	my $r = $micnts{$filt};
+	for(my $i=0; $i < 2; ++$i) {
+	    $r->[$i] += $s->[$i];
+	}
+    }
+}
+
+my @totals = (0,0,0,0,0,0,0,0,0,0,0);
+my @passes = (0,0,0,0,0,0,0,0,0,0,0);
+my @fails  = (0,0,0,0,0,0,0,0,0,0,0);
+
+print "--------------------------------------------------------------------------------------------------------------\n";
+print "SNP SUMMARY\n";
+print "--------------------------------------------------------------------------------------------------------------\n";
+print sprintf("%20s","FILTER")."\t#SNPs\t#dbSNP\t%dbSNP\t%CpG\t%CpG\t%Known\t%Novel\t%nCpG-K\t%nCpG-N\t%HM3\n";
+print sprintf("%20s","")."\t\t\t\tKnown\tNovel\tTs/Tv\tTs/Tv\tTs/Tv\tTs/Tv\tsens\n";
+print "--------------------------------------------------------------------------------------------------------------\n";
+
+foreach my $key (sort keys %hcnts) {
+    if ( ( $key eq $pass ) || ($key =~ /$pass;/ ) || ( $key eq "0" ) ) {
+	for(my $j=0; $j < 11; ++$j) {
+	    $passes[$j] += $hcnts{$key}->[$j];
+	    $totals[$j] += $hcnts{$key}->[$j];		
+	}
+    }
+    else {
+	for(my $j=0; $j < 11; ++$j) {	
+	    $fails[$j] += $hcnts{$key}->[$j];
+	    $totals[$j] += $hcnts{$key}->[$j];
+	}
+    }
+    &printSummary($key,$hcnts{$key});
+}
+print "--------------------------------------------------------------------------------------------------------------\n";
+print sprintf("%20s","FILTER")."\t#SNPs\t#dbSNP\t%dbSNP\t%CpG\t%CpG\t%Known\t%Novel\t%nCpG-K\t%nCpG-N\t%HM3\n";
+print sprintf("%20s","")."\t\t\t\tKnown\tNovel\tTs/Tv\tTs/Tv\tTs/Tv\tTs/Tv\tsens\n";
+print "--------------------------------------------------------------------------------------------------------------\n";
+foreach my $key (sort keys %mcnts) {
+    &printSummary($key,$mcnts{$key});
+}
+print "--------------------------------------------------------------------------------------------------------------\n";
+if ( $passes[0] > 0 ) {
+    &printSummary($pass,\@passes);
+}
+if ( $fails[0] > 0 ) {
+    &printSummary("FAIL",\@fails);
+}
+&printSummary("TOTAL",\@totals);
+print "------------------------------------------------------------------------------------------------------------\n";
+
+
+@totals = (0,0);
+@passes = (0,0);
+@fails  = (0,0);
+print "--------------------------------------------------------------------------------------------------------------\n";
+print "INDEL SUMMARY\n";
+print "--------------------------------------------------------------------------------------------------------------\n";
+print sprintf("%20s","FILTER")."\t#SNPs\t#dbSNP\n";
+print "--------------------------------------------------------------------------------------------------------------\n";
+
+foreach my $key (sort keys %hicnts) {
+    if ( ( $key eq $pass ) || ($key =~ /$pass;/ ) || ( $key eq "0" ) ) {    
+    #if ( ( $key eq $pass ) || ( $key eq "0" ) ) {
+	for(my $j=0; $j < 2; ++$j) {
+	    $passes[$j] += $hicnts{$key}->[$j];
+	    $totals[$j] += $hicnts{$key}->[$j];		
+	}
+    }
+    else {
+	for(my $j=0; $j < 2; ++$j) {	
+	    $fails[$j] += $hicnts{$key}->[$j];
+	    $totals[$j] += $hicnts{$key}->[$j];
+	}
+    }
+    &printiSummary($key,$hicnts{$key});
+}
+
+print "--------------------------------------------------------------------------------------------------------------\n";
+print sprintf("%20s","FILTER")."\t#SNPs\t#dbSNP\t%dbSNP\n";
+print "--------------------------------------------------------------------------------------------------------------\n";
+foreach my $key (sort keys %micnts) {
+    &printiSummary($key,$micnts{$key});
+}
+print "--------------------------------------------------------------------------------------------------------------\n";
+if ( $passes[0] > 0 ) {
+    &printiSummary($pass,\@passes);
+}
+if ( $fails[0] > 0 ) {
+    &printiSummary("FAIL",\@fails);
+}
+&printiSummary("TOTAL",\@totals);
+print "------------------------------------------------------------------------------------------------------------\n";
+
+
+sub printSummary {
+    my $key = $_[0];
+    my ($total,$db,$kts,$ktv,$nts,$ntv,$knts,$kntv,$nnts,$nntv,$hm3) = @{$_[1]};
+
+    #print STDERR "$key\t$r->[0]\t$s\t".join("\t",@{$r->[2]})."\n" if ( $key eq "TOTAL" );
+    #print sprintf("%20s",$key)."\t".($key)."\t".($total)."\t".sprintf("%.1lf",$db*100/($total+1e-10));
+    print sprintf("%20s",$key)."\t".($total)."\t".($db)."\t".sprintf("%.1lf",$db*100/($total+1e-10));    
+    print ( ($kts+$ktv+$knts+$kntv > 0) ? sprintf("\t%.1lf",($kts-$knts+$ktv-$kntv)/($kts+$ktv)*100) : "\tNA");
+    print ( ($nts+$ntv+$nnts+$nntv > 0) ? sprintf("\t%.1lf",($nts-$nnts+$ntv-$nntv)/($nts+$ntv)*100) : "\tNA");
+    print ( ($kts+$ktv == 0) ? "\tNA" : sprintf("\t%.2lf",($kts)/($ktv)) );
+    print ( ($nts+$ntv == 0) ? "\tNA" : sprintf("\t%.2lf",($nts)/($ntv)) );
+    print ( ($knts+$kntv == 0) ? "\tNA" : sprintf("\t%.2lf",($knts)/($kntv)) );
+    print ( ($nnts+$nntv == 0) ? "\tNA" : sprintf("\t%.2lf",($nnts)/($nntv)) );
+    printf("\t%.3lf",100*($hm3/($total+1e-6)));
+    printf("\n");
+}
+
+sub printiSummary {
+    my $key = $_[0];
+    my ($total,$db) = @{$_[1]};
+
+    #print sprintf("%20s",$key)."\t".($key)."\t".($total)."\t".sprintf("%.1lf",$db*100/($total+1e-10));
+    print sprintf("%20s",$key)."\t".($total)."\t".($db)."\t".sprintf("%.1lf",$db*100/($total+1e-10));    
+    printf("\n");
+}

@@ -1,0 +1,109 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+use wGetOptions qw(wpod2usage wGetOptions);    
+use hyunlib qw(makeMake forkExecWait zopen wopen);
+
+my $in = "";
+my $list = "";
+my $out = "-";
+my @keyCols = ();
+my @skipCols = ();
+my $nheaders = 1;
+my $lenient = "";
+
+wGetOptions(
+    "-Merge multiple TSV files by summing up each individual line",
+    "--Key Options",
+    "in=s" => [\$in, "Input filesn with wildcard form"],
+    "list=s" => [\$list, "Input file containing the list of all input files"],    
+    "out=s" => [\$out, "Output file"],
+    "key-col=i" => [\@keyCols, "Column containing the key info"],
+    "skip-cols=i" => [\@skipCols, "Skip specific columns not to add together"],
+    "nheaders=i" => [\$nheaders, "Number of header lines"],
+    "lenient" => [\$lenient, "Skip riegourus format checking"],    
+    ) || wpod2usage(2);
+
+if ( ( !$in && !$list ) || ( $in && $list ) || ( $#keyCols < 0 ) ) {
+    print STDERR "Missing required options : --key-col + EITHER --in OR --list\n";
+    wpod2usage();
+}
+
+my @infiles = ();
+
+if ( $in ) {
+    @infiles = glob($in);
+}
+elsif ( $list ) {
+    open(IN,$list) || die "Cannot open $list for reading\n";
+    while(<IN>) {
+	chomp;
+	push(@infiles,$_);
+    }
+    close IN;
+}
+else {
+    die;
+}
+
+my %hskip = ();
+my %hkey = ();
+foreach my $c (@skipCols) { $hskip{$c-1} = 1; }
+foreach my $c (@keyCols)  { $hkey{$c-1} = 1; }
+
+my %h = ();
+my @hdrs = ();
+for(my $i=0; $i < @infiles; ++$i) {
+    print STDERR "Processing $infiles[$i]..\n";
+    
+    open(IN,$infiles[$i]) || die "Cannot open $list for reading\n";
+    for(my $j=0; $j < $nheaders; ++$j) {
+	my $line = <IN>;
+	if ( $i == 0 ) {
+	    push(@hdrs,$line);
+	}
+	else {
+	    die "Header line $j do not match in $infiles[$i]\n" unless ( ( $hdrs[$j] eq $line ) || ( $lenient ) );
+	}
+    }
+    while(<IN>) {
+	my @F = split;
+	my %hlocal = ();
+	my $key;
+	for(my $j=0; $j < @keyCols; ++$j) {
+	    die "Column $keyCols[$j] cannot be found in $infiles[$i]\n" if ( $keyCols[$j] > @F );
+	    $key = ($j == 0) ? $F[$keyCols[$j]-1] : $key."\t".$F[$keyCols[$j]-1];
+	}
+	if ( defined($hlocal{$key}) ) {
+	    die "Observed key [$key] more than once in the same file. Make sure that the key is unique\n";
+	}
+	$hlocal{$key} = 1;
+	
+	if ( defined($h{$key}) ) {
+	    my $r = $h{$key};
+	    for(my $j=0; $j < @F; ++$j) {
+		if ( $hskip{$j} ) {
+		    die "Skipped column $j are not identical at $infiles[$i]\n" unless ( ( $r->[$j] eq $F[$j] ) || ( $lenient ) );
+		}
+		elsif ( !$hkey{$j} ) {
+		    $r->[$j] += $F[$j];
+		}
+	    } 
+	}
+	else {
+	    $h{$key} = \@F;
+	}
+    }
+    close IN;
+}
+
+my $fh = wopen($out);
+for(my $i=0; $i < @hdrs; ++$i) {
+    print {$fh} $hdrs[$i];
+}
+foreach my $key (sort keys %h) {
+    print {$fh} join("\t",@{$h{$key}})."\n";
+}
+$fh->close();

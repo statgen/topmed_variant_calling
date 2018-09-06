@@ -1,0 +1,208 @@
+#!/usr/bin/perl -w
+
+use strict;
+use POSIX qw(pow log10 sqrt);
+use FindBin;
+use lib $FindBin::Bin;
+use wGetOptions qw(wpod2usage wGetOptions);
+use Time::HiRes;
+
+## vcf-apply-external-filter
+## Apply external filter to existing VCF
+
+my $vcf = "";
+my $ext = "";
+my $out = "";
+my $prefix = "";
+my $region = "";
+my $tabix = "$FindBin::Bin/tabix"; # "/usr/cluster/bin/tabix";
+my $bgzip = "$FindBin::Bin/bgzip"; #"/usr/cluster/bin/bgzip";
+my $bcftools = "bcftools"; #"/usr/cluster/bin/bcftools";
+
+wGetOptions(
+    "-Family-based variant quality evaluation",
+    "--Required Options",
+    "vcf=s" => [\$vcf, "Input VCF file", "Input VCF file to modify FILTER column"],
+    "ext=s" => [\$ext, "External VCF file with FILTER information", "Input VCF file to modify FILTER column"],
+    "out=s" => [\$out, "Output file", "Output VCF file with modified FILTER column"],
+    "--Additional Options",
+    "prefix=s" => [\$prefix,"Prefix of the external filter"],
+    "region=s" => [\$region,"Genomic region to focus on"],
+    "tabix=s" => [\$tabix,"Path to the tabix software binary"],
+    "bgzip=s" => [\$bgzip,"Path to the bgzip software binary"],
+    "bcftools=s" => [\$bcftools,"Path to the bcftools software binary"],    
+    ) || wpod2usage(2);
+
+unless ( ( $vcf ) && ( $out ) && ( $ext ) ) {
+    print STDERR "ERROR: Missing required option\n";
+    wpod2usage(2);
+}
+
+if ( $ext =~ /\.vcf.gz$/ ) {
+    die "Cannot open $vcf\n" unless ( -s $ext );
+    if ( $region ) {
+	open(EX,"$tabix -h $ext $region |");
+    }
+    else {
+	open(EX,"zcat $ext |");	
+    }
+}
+elsif ( $ext =~ /\.bcf$/ ) {
+    print STDERR "Reading BCF file using BCFtools\n";
+    die "Cannot open $ext\n" unless ( -s $ext );
+    if ( $region ) {
+	open(EX,"$bcftools view $ext $region |");
+    }
+    else {
+	open(EX,"$bcftools view $ext |");	
+    }    
+}
+else {
+    open(EX,$ext) || die "Cannot open $vcf\n";
+}
+
+my @exfilts = ();
+my @exhdrs = ();
+my @exG = ();
+
+while(<EX>) {
+    #if ( /^##FILTER=<ID=([^,]+),Description=\"([^\"]+)\">/ ) {
+    if ( /^##FILTER=<ID=([^,]+),(.*)$/ ) {
+	if ( $prefix ) {
+	    my $filt = $1;
+	    push(@exfilts,"$prefix$filt");
+	    if ( $2 =~ /^Description=\"([^\"]+)\">/ ) {
+		my $desc = $1;
+		push(@exhdrs,"##FILTER=<ID=$prefix$filt,Description=\"$desc\">\n");
+	    }
+	    else {
+		die "Cannot parse FILTER meta line $prefix$filt\n";
+	    }
+	}
+	else {
+	    push(@exfilts,$1);
+	    push(@exhdrs,$_);
+	}
+    }
+    elsif ( ! /^#/ ) {
+	my ($chr,$pos,$id,$ref,$alt,$qual,$filt) = split;
+	push(@exG,[$chr,$pos,$ref,$alt,$filt]);
+	last;
+    }
+}
+
+## hvcfids contains the list of IDs sequenced
+if ( $vcf =~ /\.vcf.gz$/ ) {
+    die "Cannot open $vcf\n" unless ( -s $vcf );
+    if ( $region ) {
+	open(IN,"$tabix -h $vcf $region |");
+    }
+    else {
+	open(IN,"zcat $vcf |");	
+    }
+}
+elsif ( $vcf =~ /\.bcf$/ ) {
+    print STDERR "Reading BCF file $vcf using BCFtools\n";
+    die "Cannot open $vcf\n" unless ( -s $vcf );
+    if ( $region ) {
+	open(IN,"$bcftools view $vcf $region |");
+    }
+    else {
+	open(IN,"$bcftools view $vcf |");	
+    }    
+}
+else {
+    open(IN,$vcf) || die "Cannot open $vcf\n";
+}
+
+if ( $out =~ /\.bcf$/ ) {
+    open(OUT,"| $bcftools view -Ob -o $out /dev/stdin >$out.out 2> $out.err ") || die "Cannot open file\n";
+}
+elsif ( $out =~ /\.gz$/ ) {
+    open(OUT,"| $bgzip -c > $out") || die "Cannot open file\n";
+}
+else {
+    open(OUT,">$out") || die "Cannot open file\n";
+}
+
+my %hfilts = ();
+while(<IN>) {
+    if ( /^#/ ) {
+	if ( /^##/ ) {
+	    print OUT $_;
+	    if ( /^##FILTER=<ID=([^,]+),/ ) {
+		$hfilts{$1} = 1;
+	    }
+	}
+	else {
+	    for(my $i=0; $i < @exhdrs; ++$i) {
+		unless ( defined($hfilts{$exfilts[$i]}) ) {
+		    print OUT $exhdrs[$i];
+		}
+	    }
+	    print OUT $_;
+	}
+    }
+    else {
+	my @F = split(/[\t\r\n ]+/);
+	die "Cannot use multi-chromosome VCFs yet\n" if ( $F[0] ne $exG[$#exG]->[0] );
+
+	$F[6] = "PASS" if ( $F[6] eq "." );
+
+	## make sure that exG does not contain anything before the current position
+	while( $exG[0]->[1] < $F[1] ) {
+	    my ($chr,$pos,$id,$ref,$alt,$qual,$filt) = split(/[\t\r\n ]+/,<EX>);
+	    if ( defined($chr) ) {
+		@exG = ($exG[$#exG],[$chr,$pos,$ref,$alt,$filt]);
+	    }
+	    else {
+		@exG = ($exG[$#exG],[$F[0],1e9,".",".","."]);
+		last;
+	    }
+	}
+
+	## make sure that ties all exist 
+	while( $exG[0]->[1] == $exG[$#exG]->[1] ) {
+	    my ($chr,$pos,$id,$ref,$alt,$qual,$filt) = split(/[\t\r\n ]+/,<EX>);
+	    if ( defined($chr) ) {
+		push(@exG,[$chr,$pos,$ref,$alt,$filt]);
+	    }
+	    else {
+		push(@exG,[$F[0],1e9,".",".","."]);
+		last;
+	    }	    
+	}
+
+	if ( $F[1] % 10000 == 0 ) {
+	    print STDERR "$F[0]:$F[1] $exG[0]->[0]:$exG[0]->[1]\n";
+	}	
+
+	## Search for overlaps
+	if ( $F[1] == $exG[0]->[1] ) {
+	    for(my $i=0; $i < $#exG; ++$i) {
+		if ( $exG[$i]->[4] ne "PASS" ) {
+		    if ( ( $F[3] eq $exG[$i]->[2] ) && ( $F[4] eq $exG[$i]->[3] ) ) {
+			my @oldFilts = split(/;/,$F[6]);
+			@oldFilts = () if ( ( $F[6] eq "PASS" ) || ( $F[6] eq "." ) );
+			my @newFilts = split(/;/,$exG[$i]->[4]);
+			for(my $i=0; $i < @newFilts; ++$i) {
+			    my $j=0;
+			    for($j=0; $j < @oldFilts; ++$j) {
+				last if ( $oldFilts[$j] eq $prefix.$newFilts[$i] );
+			    }
+			    if ( $j == $#oldFilts+1 ) {
+				push(@oldFilts,$prefix.$newFilts[$i]);
+			    }
+			}
+			$F[6] = $#oldFilts < 0 ? "PASS" : join(";",@oldFilts);
+		    }
+		}
+	    }
+	}
+	print OUT join("\t",@F)."\n";
+    }
+}
+
+close OUT;
+close IN;
+close EX;

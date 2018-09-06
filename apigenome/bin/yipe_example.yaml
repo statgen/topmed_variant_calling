@@ -1,0 +1,460 @@
+#####################################################
+# GLOBAL PARAMETERS
+######################################################
+
+###########################################################
+# INDIVIDUAL COMMANDS
+############################################################
+VERIFY_BAM_ID:
+  cmd: "$BIN_VERIFY_BAM_ID --bam $INPUT --out $OUTPUT --vcf $HM3_VCF"
+  check_before: $INPUT.bai     ## this file must exist before running
+  check_after: $OUTPUT.selfSM  ## this file must exist after running
+
+SAMTOOLS_BAM_INDEX:
+  cmd: "$BIN_SAMTOOLS index $INPUT"
+  check_before: $INPUT
+  check_after: $INPUT.bai
+
+SAMTOOLS_CRAM_INDEX:
+  cmd: "$BIN_SAMTOOLS index $INPUT"
+  check_before: $INPUT
+  check_after: $INPUT.crai
+
+QPLOT_BAM:
+  params: "--minMapQuality 0 --bamlabel recal"
+  cmd: "$BIN_QPLOT --reference $REF_FASTA --dbsnp $DBSNP_VCF --stats $OUTPUT.stats --Rcord $OUTPUT.R $params $INPUT"
+  check_before: $INPUT.bai
+  check_after: ["$OUTPUT.stats", "$OUTPUT.R"]
+
+DEDUP_BAM:
+  cmd: "$BIN_BAM dedup --in $INPUT --out $OUTPUT $params $BAMUNTIL_THINNING"
+  check_before: $INPUT
+  check_after: $OUTPUT
+
+POLISH_BAM:
+  params: "--AS $BAM_HEADER_AS --UR file:$REF_FASTA --checkSQ
+  cmd: "$BIN_BAM polishBam -f $REF_FASTA -i $INPUT -o $OUTPUT -l $OUTPUT.log $BAMUTIL_THINNNG"
+  
+RECAL_BAM:
+  recal_bam_run_dedup: "dedup $dedupParams --";
+  cmd: "$BIN_BAM ${recal_bam_run_dedup}recab --in $INPUT --out $OUTPUT $params $BAMUTIL_THINNING";
+
+###########################################################
+# LISTS AND MAPS
+############################################################
+CHRS:
+  type: list
+  value: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, X]
+
+SAMPLE2BAM:
+  type: map
+  file: $OUT_DIR/bam.list
+  keycol: 1
+
+SAMPLE2FASTQ
+  type: map
+  file: $OUT_DIR/fastq.list
+  header: true
+  keycol: SAMPLE
+
+CHR2BAM:
+  type: map
+  file: $REF.fai
+  keycol: 1
+
+#####################################################
+# GLOBAL RESOURCE FILES
+####################################################
+REF_DIR: $GOTCLOUD_ROOT/gotcloud.ref
+REF_FASTA: $REF_DIR/hs37d5.fa
+DBSNP_VCF :  $REF_DIR/dbsnp_142.b37.vcf.gz
+HM3_VCF : $REF_DIR/hapmap_3.3.b37.sites.vcf.gz
+OMNI_VCF : $REF_DIR/1000G_omni2.5.b37.sites.PASS.vcf.gz
+INDEL_PREFIX = $REF_DIR/1kg.pilot_release.merged.indels.sites.hg19 # 1000 Genomes Pilot 1 indel VCF prefix
+PE_ANN : $REF_DIR/pe.100.01.ann
+SE_ANN : $REF_DIR/se.100.005.ann
+
+BIN_DIR : $GOTCLOUD_ROOT/bin
+SCRIPT_DIR : $GOTCLOUD_ROOT/scripts
+BAM_LIST : $OUT_DIR/bam.list
+
+BIN_SAMTOOLS : $BIN_DIR/samtools
+BIN_SAMTOOLS_SORT : $BIN_DIR/samtools
+BIN_BWA : $BIN_DIR/bwa
+BIN_VERIFY_BAM_ID : $BIN_DIR/verifyBamID
+BIN_QPLOT : $BIN_DIR/qplot
+BIN_BAM : $BIN_DIR/bam
+
+TMP_DIR : $OUT_DIR/tmp
+QC_DIR : $OUT_DIR/QCFiles
+
+#######################################################
+# STEPS TO RUN
+#######################################################
+STEP_BAM_QC:
+  SAMPLE: 
+    each: $SAMPLE2BAM
+    what: 
+  run:
+    - 
+      run: QPLOT_BAM
+      INPUT: $SAMPLE2BAM
+      OUTPUT
+
+####################
+# BWA-specific Parameters
+####################
+  bwa_mem:
+    BWA_THREADS : -t 1
+    CMD :
+
+########################
+# Polish Settings
+########################
+
+########################
+# Post-Merge Steps
+########################
+PER_MERGE_STEPS : verifyBamID qplot index recab
+ALIGN_CRAM_OUTPUT_STEPS : cramIndex cram
+ALIGN_CRAM_OUTPUT : false
+merge_EXT : merged.bam
+merge_DIR : $(MERGE_TMP)
+
+
+MAKE_BASE_NAME_PIPE = gotcloud  # basename of output Makefile $(MAKE_BASE_NAME).<type>.Makefile will be generated
+
+
+#------------------------------------------------
+# Defaults for a generic pipeline steps based on BAMs
+#------------------------------------------------
+# generic mergeBam for each sample
+[bam_mergeBam]
+SAMPLES = MULTI_BAM
+DEPEND = BAM
+DIR = $(OUT_DIR)/mergedBams
+OUTPUT = $(DIR)/?(SAMPLE).bam
+CMD = $(BAM_EXE) mergeBam --in ?(INPUT) --out $(OUTPUT)
+INPUT_JOIN = --in 
+
+[bam_indexBam]
+DEPEND = BAM
+INPUT_FILE =?(BAM)
+OUTPUT = $(INPUT_FILE).bai
+CMD = $(SAMTOOLS_EXE) index $(INPUT_FILE) 2> $(OUTPUT).log
+
+[bam_recab]
+DEPEND = BAM
+DIR = $(OUT_DIR)/recab
+OUTPUT = $(DIR)/?(SAMPLE).recal.bam
+CMD = $(BAM_EXE) dedup --log $(OUTPUT).metrics --recab --in $(RECAB_INPUT) --out $(OUTPUT) --refFile $(REF) --dbsnp $(DBSNP_VCF) $(USER_PARAMS) $(BAMUTIL_THINNING)
+RECAB_INPUT = ?(BAM)
+USER_PARAMS =
+
+[bam_qplot] 
+DEPEND = BAM
+DIR = $(OUT_DIR)/QCFiles
+#LABELS = --bamlabel bam
+LABELS = 
+OUTPUT= $(DIR)/?(SAMPLE).qplot
+MIN_MAP_QUAL = --minMapQuality 0
+CMD = $(QPLOT_EXE) --reference $(REF) --dbsnp $(DBSNP_VCF) --stats $(OUTPUT).stats --Rcode $(OUTPUT).R $(MIN_MAP_QUAL) $(LABELS) ?(INPUT) 2> $(OUTPUT).err
+
+[bam_verifyBamID]
+DEPEND = PER_SAMPLE_BAM
+INPUT_FILE = ?(BAM)
+NEED_BAI = 1
+OUTPUT= $(DIR)/?(SAMPLE).genoCheck
+DIR = $(OUT_DIR)/QCFiles
+PARAMS = --vcf $(HM3_VCF)
+USER_PARAMS = 
+CMD = $(VERIFY_BAM_ID_EXE) --bam $(INPUT_FILE) --out $(OUTPUT) $(PARAMS) $(USER_PARAMS) 2> $(OUTPUT).err
+
+
+#-----------------------------------
+# Indel Calling Specific Defaults
+#-----------------------------------
+[indel]
+VT_EXE = $(BIN_DIR)/vt
+OUTPUT_TYPE = + # bcf
+OUTPUT_EXT = bcf
+UNIT_CHUNK = 20000000  # Chunk size of indel calling : 20Mb is default
+NO_CRAM = 1
+
+STEPS = indel_mergeBam indel_indexMBam singleBamDiscover multiBamDiscover indexD merge indexM probes indexP singleBamGenotype multiBamGenotype indexG concatG indexCG mergeG indexMG concat indexC
+
+[indelNoInterval] : indel
+INTERVAL_EXT = 
+INTERVAL_CMD = 
+
+[indelChr] : indel
+INTERVAL_EXT = ?(CHR).
+INTERVAL_CMD = -i ?(CHR)
+
+[indelChrPos] : indel
+INTERVAL_EXT = ?(CHR).?(START).?(END).
+INTERVAL_CMD = -i ?(CHR):?(START)-?(END)
+
+
+#############
+#0. Merging BAMs
+#############
+# If discovery or genotyping are broken up into intervals, 
+# the merge must be done as a separate step so the merged bam can be indexed.
+# Since currently genotyping is broken into intervals, the default will
+# be to merge as its own set of steps.
+[indel_mergeBam] : bam_mergeBam
+DIR = $(OUT_DIR)/indel/mergedBams
+#CMD = $(SAMTOOLS_EXE) merge $(OUTPUT) ?(INPUT)
+
+
+[indel_indexMBam] : indel
+DEPEND = indel_mergeBam
+OUTPUT = $(INPUT_FILE).bai
+CMD = $(SAMTOOLS_EXE) index $(INPUT_FILE) 2> $(OUTPUT).log
+INPUT_FILE = $($(DEPEND)/OUTPUT)
+
+
+#############
+#1. Discovery
+#############
+[discoverBase] : indelNoInterval
+DEPEND = BAM
+DIR = $(OUT_DIR)/indel/indelvcf/?(SAMPLE)
+OUTPUT = $(DIR)/?(SAMPLE).sites.$(INTERVAL_EXT)$(OUTPUT_EXT)
+CMD = $(discover_CMD) | $(normalize_CMD) | $(mergedups_CMD)
+VARIANT_TYPE = indels
+DISCOVER_INPUT = ?(BAM)
+discover_CMD = $(VT_EXE) discover -b $(DISCOVER_INPUT) -o $(OUTPUT_TYPE) -v $(VARIANT_TYPE) -r $(REF) -s ?(SAMPLE) $(INTERVAL_CMD) 2> $(DIR)/discover.$(INTERVAL_EXT)log
+normalize_CMD = $(VT_EXE) normalize $(OUTPUT_TYPE) -r $(REF) -o $(OUTPUT_TYPE) 2> $(DIR)/normalize.$(INTERVAL_EXT)log
+mergedups_CMD = $(VT_EXE) mergedups $(OUTPUT_TYPE) -o $(OUTPUT) 2> $(DIR)/mergedups.$(INTERVAL_EXT)log
+FILELIST = $(OUT_DIR)/indel/aux/candidate_vcf_files.txt
+
+[multiBamDiscover] : discoverBase
+SAMPLES = MULTI_BAM
+DEPEND = indel_indexMBam
+DISCOVER_INPUT = $(indel_mergeBam/OUTPUT)
+# Since genotyping is broken up by regions, we already did the merge, 
+# This logic is to do it inline (which we can't do when breaking it up)
+#DISCOVER_INPUT = -
+#CMD = $(merge_CMD) | $(discoverBase/CMD)
+#REGION = # -r ?(CHR)  Only add if this is broken by region
+#merge_CMD = $(BAM_EXE) mergeBam --in ?(INPUT) --out -.ubam $(REGION)
+#INPUT_JOIN = --in 
+
+[singleBamDiscover] : discoverBase
+SAMPLES = SINGLE_BAM
+
+[indexBase] : indel
+OUTPUT = $(INPUT_FILE).csi
+CMD = $(VT_EXE) index $(INPUT_FILE) 2> $(OUTPUT).log
+INPUT_FILE = $($(DEPEND)/OUTPUT)
+
+[indexD] : indexBase
+DEPEND = multiBamDiscover singleBamDiscover
+INPUT_FILE = $(discoverBase/OUTPUT)
+
+[merge] : indelChr
+DEPEND = indexD
+OUTPUT = $(DIR)/all.sites.$(INTERVAL_EXT)$(OUTPUT_EXT)
+DIR = $(OUT_DIR)/indel/aux
+CMD = $(VT_EXE) merge_candidate_variants -L $(discoverBase/FILELIST) -o $(OUTPUT) $(INTERVAL_CMD) 2> $(DIR)/all.sites.$(INTERVAL_EXT)$(OUTPUT_EXT).log
+
+[indexM] : indexBase
+DEPEND = merge
+
+###############
+##2. Genotyping
+###############
+
+[probes] : indelChrPos
+DEPEND = merge indexM
+DIR = $(OUT_DIR)/indel/aux
+OUTPUT = $(DIR)/probes.sites.$(INTERVAL_EXT)$(OUTPUT_EXT)
+CMD = $(VT_EXE) construct_probes $(merge/OUTPUT) -r $(REF) -o $(OUTPUT) $(INTERVAL_CMD) 2> $(DIR)/probes.$(INTERVAL_EXT)log
+
+
+[indexP] : indexBase
+DEPEND = probes
+
+[genotypeBase] : indelChrPos
+DEPEND = probes indexP
+OUTPUT = $(DIR)/?(SAMPLE).genotypes.$(INTERVAL_EXT)$(OUTPUT_EXT)
+DIR = $(discoverBase/DIR)
+GENOTYPE_INPUT = ?(BAM)
+CMD = $(VT_EXE) genotype -b $(GENOTYPE_INPUT) -r $(REF) -s ?(SAMPLE) -o $(OUTPUT) $(INTERVAL_CMD) $(probes/OUTPUT) 2> $(DIR)/genotype.$(INTERVAL_EXT)log
+FILELIST = $(concatG/OUTPUT).list.txt
+
+[multiBamGenotype] : genotypeBase
+DEPEND = indel_indexMBam $(genotypeBase/DEPEND)
+SAMPLES = MULTI_BAM
+GENOTYPE_INPUT = $(indel_mergeBam/OUTPUT)
+# Since genotyping is broken up by regions, we already did the merge, 
+# This logic is to do it inline (which we can't do when breaking it up)
+#GENOTYPE_INPUT = -
+#CMD = $(merge_CMD) | $(genotypeBase/CMD)
+#merge_CMD = $(BAM_EXE) mergeBam --in ?(BAM) --out -.ubam
+#BAM_JOIN = --in 
+
+[singleBamGenotype] : genotypeBase
+SAMPLES = SINGLE_BAM
+DEPEND = BAM $(genotypeBase/DEPEND)
+GENOTYPE_INPUT = ?(BAM)
+
+[indexG] : indexBase
+DEPEND = multiBamGenotype singleBamGenotype
+INPUT_FILE = $(genotypeBase/OUTPUT)
+
+
+######################
+#3. Merge and Annotate
+######################
+# Concatenate the regions
+[concatG] : indelChr
+DEPEND = multiBamGenotype singleBamGenotype
+OUTPUT = $(DIR)/?(SAMPLE).genotypesConcat.$(INTERVAL_EXT)$(OUTPUT_EXT)
+DIR = $(genotypeBase/DIR)
+CMD = $(VT_EXE) concat -L $(genotypeBase/FILELIST) -o $(OUTPUT) 2> $(DIR)/concat.$(INTERVAL_EXT)log
+FILELIST = $(OUT_DIR)/indel/aux/merge.$(mergeG/INTERVAL_EXT)vcf.list.txt
+
+[indexCG] : indexBase
+DEPEND = concatG
+
+[mergeG] : indelChr
+DEPEND = indexCG
+OUTPUT = $(DIR)/all.genotypes.$(INTERVAL_EXT)$(OUTPUT_EXT)
+DIR = $(OUT_DIR)/indel/final/merge
+CMD = $(VT_EXE) merge -L $(concatG/FILELIST) -o $(OUTPUT_TYPE) | $(VT_EXE) compute_features $(OUTPUT_TYPE) -o $(OUTPUT_TYPE) 2> $(DIR)/compute_features.$(INTERVAL_EXT)log | $(VT_EXE) remove_overlap $(OUTPUT_TYPE) -o $(OUTPUT) 2> $(DIR)/remove_overlap.$(INTERVAL_EXT)log
+
+[indexMG] : indexBase
+DEPEND = mergeG
+
+# Concatenate the regions
+[concat] : indel
+DEPEND = mergeG
+OUTPUT_EXT = vcf.gz
+OUTPUT = $(DIR)/all.genotypes.$(OUTPUT_EXT)
+DIR = $(OUT_DIR)/indel/final
+CMD = $(VT_EXE) concat ?(INPUT) -o $(OUTPUT) 2> $(DIR)/concat.log
+
+[indexC] : indexBase
+DEPEND = concat
+OUTPUT = $(INPUT_FILE).tbi
+
+
+#-----------------------------------
+# Recalibration Pipeline Defaults
+#-----------------------------------
+[recab]
+STEPS = recab_mergeBam singleBamRecab multiBamRecab recab_indexBam
+
+[recab_mergeBam] : bam_mergeBam
+DIR = $(OUT_DIR)/recab/mergedBams
+
+[multiBamRecab] : bam_recab
+SAMPLES = MULTI_BAM
+DEPEND = recab_mergeBam
+RECAB_INPUT = $(recab_mergeBam/OUTPUT)
+
+[singleBamRecab] : bam_recab
+SAMPLES = SINGLE_BAM
+
+[recab_indexBam] : bam_indexBam
+DEPEND = multiBamRecab singleBamRecab
+INPUT_FILE = $(bam_recab/OUTPUT)
+
+
+#-----------------------------------
+# Recalibration with QC Pipeline Defaults
+#-----------------------------------
+[recabQC]
+STEPS = recab_mergeBam singleBamRecab multiBamRecab recab_indexBam recabQC_qplot recabQC_verifyBamID
+
+[recabQC_qplot] : bam_qplot
+DEPEND = multiBamRecab singleBamRecab
+DIR = $(OUT_DIR)/recab/QCFiles
+LABELS = --bamlabel recal
+
+[recabQC_verifyBamID] : bam_verifyBamID
+DEPEND = multiBamRecab singleBamRecab recab_indexBam
+DIR = $(OUT_DIR)/recab/QCFiles
+INPUT_FILE = $(bam_recab/OUTPUT)
+
+
+#-----------------------------------
+# BAM QC Pipeline Defaults - assumes BAM has already been indexed
+#-----------------------------------
+[bamQC]
+STEPS = bam_qplot bam_verifyBamID
+
+#-----------------------------------
+# BAM QC Pipeline, including indexing the BAM 
+#-----------------------------------
+[bamQC_createIndex]
+STEPS = bam_qplot bam_indexBam bam_createIndex_verifyBamID
+
+[bam_createIndex_verifyBamID] : bam_verifyBamID
+DEPEND = BAM bam_indexBam
+NEED_BAI = 0
+
+
+#-----------------------------------
+# Bam2Fastq pipeline
+#-----------------------------------
+[bam2fastq]
+STEPS = bam2fastqStep fastqlist
+IGNORE_REF_CHR_CHECK = 1
+
+[bam2fastqStep]
+DEPEND = BAM
+DIR = $(OUT_DIR)/fastqs
+OUTPUT = $(DIR)/?(BAM)
+CMD = $(PIPE)$(BAM_EXE) bam2fastq --in $(BAM2FASTQ_INPUT) --outBase $(OUTPUT) --splitRG --gzip 2> $(OUTPUT)2fastq.log
+BAM2FASTQ_INPUT = ?(BAM)
+PIPE =
+
+[fastqlist]
+DEPEND = bam2fastqStep
+OUTPUT = $(FASTQ_LIST)
+CMD = find $(bam2fastqStep/DIR)/. -name "*.list" |xargs awk '{if(FNR != 1 || (FNR == NR)) {print $0}}' > $(OUTPUT)
+LOCAL = 1
+
+#-----------------------------------
+# binBam2Fastq pipeline
+#-----------------------------------
+[binBam2fastq]
+STEPS = binBam2fastqStep binBam2fastqlist
+IGNORE_REF_CHR_CHECK = 1
+
+[binBam2fastqStep] : bam2fastqStep
+BAM2FASTQ_INPUT = -.ubam
+PIPE = $(BAM_EXE) squeeze --binMid --binQualS 2,3,10,20,25,30,35,40,50 --keepDups --in ?(BAM) --out -.ubam | 
+
+[binBam2fastqlist] : fastqlist
+DEPEND = binBam2fastqStep
+
+
+#-----------------------------------
+# Cleanup BAM and Bam2Fastq pipeline
+#-----------------------------------
+[cleanUpBam2fastq]
+STEPS = cleanUpBam bam2fastqStepFromClean fastqlistFromClean
+IGNORE_REF_CHR_CHECK = 1
+
+[cleanUpBam]
+DEPEND = BAM
+DIR = $(OUT_DIR)/fastqs/tmp.cleanUpBam
+OUTPUT = $(DIR)/?(BAM)
+CMD = ($(BAM_EXE) squeeze --in ?(BAM) --keepDups --rmTags AS:i,BD:Z,BI:Z,XS:i,MC:Z,MD:Z,NM:i,MQ:i --out - | $(SAMTOOLS_EXE) view -S -b -F 0x800 - | $(SAMTOOLS_SORT_EXE) sort -n -o - $(DIR)/?(BAM).temp | $(SAMTOOLS_EXE) fixmate - $(OUTPUT)) 2> $(OUTPUT)2fastq.log
+
+[bam2fastqStepFromClean]
+DEPEND = cleanUpBam
+DIR = $(OUT_DIR)/fastqs
+OUTPUT = $(DIR)/?(BAM)
+CMD = $(BAM_EXE) bam2fastq --in $(cleanUpBam/OUTPUT) --outBase $(OUTPUT) --splitRG --readname --gzip 2> $(OUTPUT)2fastq.log
+
+[fastqlistFromClean]
+DEPEND = bam2fastqStepFromClean
+OUTPUT = $(FASTQ_LIST)
+CMD = find $(bam2fastqStepFromClean/DIR)/. -name "*.list" |xargs awk '{if(FNR != 1 || (FNR == NR)) {print $0}}' > $(OUTPUT)
+LOCAL = 1

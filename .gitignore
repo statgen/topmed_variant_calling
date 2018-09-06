@@ -30,3 +30,12 @@
 *.exe
 *.out
 *.app
+
+htslib/tabix
+htslib/bgzip
+htslib/htsfile
+samtools/samtools
+bcftools/bcftools
+cramore/cramore
+vt-topmed/vt
+king/king

@@ -1,0 +1,42 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use Time::HiRes;
+use lib $FindBin::Bin;
+use wGetOptions qw(wpod2usage wGetOptions);    
+use hyunlib qw(makeMake forkExecWait zopen wopen);
+
+my $mapf = "";
+my $inf = "";
+
+wGetOptions(
+    "-Convert transcript names to gene names\n",
+    "--Key Options",
+    "map=s" => [\$mapf, "Map file containing Ensemble gene id / transcript id / gene symbol"],
+    "in=s" => [\$inf, "Input file"],
+    ) || wpod2usage(2);
+
+if ( !$mapf || !$inf ) {
+    print STDERR "Missing required options : --fq1, --fq2, --out\n";
+    wpod2usage();
+}
+
+print STDERR "Analysis started at ".scalar(localtime)."\n";
+
+my %hconv = ();
+open(IN,$mapf) || die "Cannot open file\n";
+while(<IN>) {
+    my ($tid,$gid,$gname) = split;
+    $hconv{$tid} = $gname;
+}
+close IN;
+
+open(IN,$inf) || die "Cannot open file\n";
+while(<IN>) {
+    next if ( /^#/ );
+    my ($tid,@G) = split;
+    die "Cannot find $tid\n" unless ( defined($hconv{$tid}) );
+    print join("\t",$hconv{$tid},$tid,@G)."\n";
+}
+close IN;

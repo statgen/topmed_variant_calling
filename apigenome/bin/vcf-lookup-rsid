@@ -1,0 +1,73 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+#use lib "/net/fantasia/home/hmkang/bin/utils/";
+use hyunlib qw(initRef getCpGs);
+use wGetOptions qw(wGetOptions wpod2usage);
+
+my $rsid = "";
+my $rsdbf = "";
+my $listf = "";
+my $dbSNPf = ""; # /net/fantasia/home/hmkang/data/dbSNP/b142/dbsnp_142.b37.rssorted.txt.gz
+my $out = "";
+my $binbgzip = "$FindBin::Bin/bgzip";
+my $bintabix = "$FindBin::Bin/tabix";
+
+wGetOptions(
+    "-Add rsID into VCF",
+    "--Required Options",
+    "db=s",[\$rsdbf,"VCF-like tabixable file containing BUILD,RSID,CHR,POS,REF,ALT, sorted by the second column numerically"], 
+    "--Additional Options",
+    "id=s", [\$rsid,"rsID of the variant looking for"],
+    "list=s", [\$listf,"List of files containing a list of rsIDs"],    
+    "out=s",[\$out,"Output file. STDOUT if unspecified"],
+    ) || wpod2usage(2);
+
+
+wpod2usage(2) unless ( $rsdbf );
+
+if ( $out =~ /\.gz$/ ) { open(OUT,"| $binbgzip -c > $out") || die "Cannot open file\n"; }
+elsif ( $out ) { open(OUT,">$out") || die "Cannot open file\n"; }
+else { *OUT = *STDOUT; }
+
+if ( ( $rsdbf =~ /\.gz$/ ) && ( -s "$rsdbf.tbi" ) ) {
+    my @F = split(/[\t\r\n ]+/,`zcat $rsdbf | grep -v ^#| head -1`);
+    my @empty = (".") x ($#F+1);
+    if ( ( $F[0] =~ /^b\d+$/ ) && ( $F[1] =~ /^\d+$/ ) && ( $F[3] =~ /^\d+$/ ) ) {    
+	my @rsids = ();
+	if ( $listf ) {
+	    open(IN,$listf) || die "Cannot open file\n";
+	    while(<IN>) {
+		chomp;
+		s/^rs//;
+		push(@rsids,$_);
+	    }
+	    close IN;
+	}
+	else {
+	    $rsid =~ s/^rs//;
+	    push(@rsids,$rsid);
+	}
+
+	foreach my $rsid (@rsids) {	
+	    @F = split(/[\t\r\n ]+/,`$bintabix $rsdbf $F[0]:$rsid-$rsid`);
+	    if ( $F[1] ne $rsid ) {
+		print STDERR "WARNING: Cannot find rs$rsid\n";
+		print OUT join("\t","rs$rsid",@empty[2..$#empty])."\n";
+	    }
+	    else {
+		print OUT join("\t","rs$rsid",@F[2..$#F])."\n";
+	    }
+	}
+    }
+    else {
+	print STDERR "ERROR: First line of $rsdbf does not conform to the\n";
+	wpod2usage(2);	
+    }
+}
+else {
+    print STDERR "$rsdbf must be bgzipped and $rsdbf.tbi should exist\n";
+    wpod2usage(2);
+}

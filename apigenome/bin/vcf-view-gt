@@ -1,0 +1,43 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+use hyunlib qw(initRef getCpGs);
+use wGetOptions qw(wGetOptions wpod2usage);
+
+my $vcf = "";
+my $region = "";
+my $out = "";
+my $binbgzip = "bgzip";
+my $bintabix = "tabix";
+
+wGetOptions(
+    "-Quickly view the genotypes of the VCF file in a specified region",
+    "--Required Options",
+    "vcf=s",[\$vcf,"Input VCF file, bgzipped and tabixed"],
+    "region=s",[\$region,"Region to query"],    
+    "--Additional Options",
+    "out=s",[\$out,"Output file prefix"],
+    ) || wpod2usage(2);
+
+
+wpod2usage(2) unless ( ( $vcf ) && ( $region ) );
+
+if ( $out =~ /\.gz$/ ) { open(OUT,"| $binbgzip -c > $out") || die "Cannot open file\n"; }
+elsif ( $out ) { open(OUT,">$out") || die "Cannot open file\n"; }
+else { *OUT = *STDOUT; }
+
+open(IN,"tabix -h $vcf $region| grep -v ^##|") || die "Cannot open file\n";
+my @H = split(/[\t\r\n ]+/,<IN>);
+while(<IN>) {
+    my @G = split;
+    print OUT join("\t","----",$G[0].":".$G[1].":".$G[3].":".$G[4],$G[6],$G[7])."\n";
+    for(my $i=9; $i < @G; ++$i) {
+	my @fields = split(/:/,$G[$i]);
+	print OUT join("\t",$H[$i],@fields)."\n";
+    }
+    print OUT "\n";
+}
+close IN;
+close OUT;

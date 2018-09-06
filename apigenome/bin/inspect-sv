@@ -1,0 +1,174 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+use wGetOptions qw(wpod2usage wGetOptions);    
+use hyunlib qw(makeMake forkExecWait zopen wopen);
+
+my @bams = ();
+my $bamlist = "";
+my $region = "";
+my $win = 1000;
+
+wGetOptions(
+    "-Inspect the reads for structural variants",
+    "--Key Options",
+    "bam=s" => [\@bams, "BAM file (s)"],
+    "bamlist=s" => [ \$bamlist, "BAM list file"],    
+    "region=s" => [\$region, "Candidate CNV region"],
+    "win=i" => [\$win, "Window around the CNV"]
+    ) || wpod2usage(2);
+
+if ( ( (!$bamlist) && ($#bams < 0 )) || (!$region) ) {
+    print STDERR "Missing required options : --bam, --region\n";
+    wpod2usage();
+}
+
+if ( $bamlist ) {
+    open(IN,$bamlist) || die "Cannot open file\n";
+    while(<IN>) {
+	my @F = split;
+	die "Expecting one of two columns\n" unless ( $#F < 2 );
+	die "Cannot parse $F[$#F] as a BAM file\n" if ( ( $F[$#F] =~ /\s+/ ) || ( ! $F[$#F] =~ /\.bam$/  ) );
+	push(@bams,$F[$#F]);
+    }
+    close IN;
+}
+
+my ($chr,$beg,$end);
+
+if ( $region =~ /^(\S+):(\d+)-(\d+)$/ ) {
+    ($chr,$beg,$end) = ($1,$2,$3);
+}
+else {
+    print STDERR "Cannot parse region $region\n";
+    wpod2usage();
+}
+
+my $xbeg = $beg - $win;
+my $xend = $end + $win;
+
+## Divide the region into three part : BEFORE WITHIN AFTER
+## How many reads are mapped in BEFORE / WITHIN / AFTER
+## What are the insert size of reads..
+
+foreach my $bam (@bams) {
+    my @cnts = (0,0,0);
+
+    ## Try to find the sample ID
+    my $sm;
+    open(IN,"samtools view -H $bam | grep ^\@RG|") || die "Cannot open the header of $bam\n";
+    while(<IN>) {
+	if ( /SM:(\S+)/ ) {
+	    die "Multiple sample IDs $sm, $1 in $bam\n" if ( defined($sm) && ( $sm ne $1 ) );
+	    $sm = $1;
+	}
+    }
+    close IN;
+
+    ## Read the extended regions, and ask the following questions
+    ## 1. Basewise depth distribution -- what is the basewise depth distribution across the regions?
+    ## 2. Reads spanning over the regions -- how many reads spans over the regions?
+    ## 3. Reads soft-clipped -- how many reads are soft clipped around the breakpoint?
+    #print STDERR "samtools view $bam $region\n";
+
+    my ($d0,$d1,$d2) = (0,0,0); ## before, in, after
+    my ($n0,$n1,$n2) = (0,0,0);
+    my ($i0,$i1,$i2) = (0,0,0);
+    my ($s0,$s1) = (0,0);
+    open(IN,"samtools view $bam $region |") || die "Cannot open file\n";
+    while(<IN>) {
+	my ($rname,$flag,$chr,$lpos,$mq,$cigar,$matechr,$matepos,$isize) = split;
+	my $rpos = $lpos;
+	while( $cigar =~ /^(\d+)([MINDS])/ ) {
+	    my ($clen,$cop) = ($1, $2);
+	    $cigar =~ s/^\d+[MINDS]//;	    
+	    if ( $cop eq "M" ) {
+		my ($t0,$t1,$t2) = &addDepth($rpos, $clen, $xbeg, $beg, $end, $xend);
+		$d0 += $t0; $d1 += $t1; $d2 += $t2;
+		$rpos += $clen;
+	    }
+	    elsif ( $cop eq "I" ) {
+	    }
+	    elsif ( $cop eq "D" ) {
+		$rpos += $clen;		
+	    }
+	    elsif ( $cop eq "S" ) {
+		if ( ( abs($rpos-$beg) < 100 ) || ( abs($rpos-$end) < 100 ) ) {
+		    ++$s0;
+		}
+		else {
+		    ++$s1;
+		}
+	    }	   
+	    else {
+		die "Cannot parse CIGAR operator $cop\n";
+	    }
+	}
+
+	if ( $matechr eq $chr ) {
+	    if ( $rpos < $beg ) {
+		++$n0; $i0 += abs($isize);
+	    }
+	    elsif ( $lpos > $end ) {
+		++$n2; $i2 += abs($isize);		
+	    }
+	    else {
+		++$n1; $i1 += abs($isize);
+	    }
+	}
+	
+    }
+    close IN;
+
+    printf("%s\t%.1f\t%.1f\t%.1f\t%d\t%d\t%.1f\t%.1lf\t%.1lf\n",$sm,$d0/($beg-$xbeg),$d1/($end-$beg),$d2/($xend-$end),$s0,$s1,$i0/($n0+0.01),$i1/($n1+0.01),$i2/($n2+0.01));
+}
+
+sub addDepth {
+    my ($pos,$clen,$xbeg,$beg,$end,$xend) = @_;
+    my @d = (0,0,0);    
+    if ( $pos < $xbeg ) {
+	$clen -= ( $xbeg - $pos );	
+	$pos = $xbeg;
+	if ( $clen < 0 ) {
+	    return (0,0,0);
+	}
+    }
+
+    if ( $pos < $beg ) {
+	if ( $pos + $clen < $beg ) {
+	    $d[0] += $clen;
+	    return @d;
+	}
+	else {
+	    $d[0] += ($beg-$pos);
+	    $clen -= ($beg-$pos);	    
+	    $pos = $beg;
+	}
+    }
+    if ( $pos < $end ) {
+	if ( $pos + $clen < $end ) {
+	    $d[1] += $clen;
+	    return @d;
+	}
+	else {
+	    $d[1] += ($end-$pos);
+	    $clen -= ($end-$pos);	    	    
+	    $pos = $end;
+	}
+    }
+    if ( $pos < $xend ) {
+	if ( $pos + $clen < $xend ) {
+	    $d[2] += $clen;
+	    return @d;
+	}
+	else {
+	    $d[2] += ($xend - $pos);
+	    $clen -= ($xend - $pos);
+	    $pos = $xend;
+	    return @d;
+	}
+    }
+    return @d;
+}

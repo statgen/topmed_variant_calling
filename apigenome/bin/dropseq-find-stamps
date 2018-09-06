@@ -1,0 +1,148 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+use wGetOptions qw(wpod2usage wGetOptions);    
+use hyunlib qw(makeMake forkExecWait zopen wopen);
+
+my $fq1 = "";
+my $out = "";
+my $lenCellBarcode = 12;
+my $lenUMI = 8;
+my $approxCellCount = 1000;
+
+wGetOptions(
+    "-Identify Dropseq barcodes",
+    "--Key Options",
+    "fq1=s" => [\$fq1, "First end of input FASTQ file (expected length 20)"],
+    "out=s" => [\$out, "Output file prefix"],
+    "--Additional Options",
+    "length-cell-barcode=i" => [\$lenCellBarcode, "Length of cell barcode"],
+    "length-umi=i",[\$lenUMI, "Length of unique molecular index (UMI)"],
+    "approx-cell-count=i",[\$approxCellCount, "Approximate Cell Count"],    
+    ) || wpod2usage(2);
+
+if ( !$fq1 || !$out ) {
+    print STDERR "Missing required options : --fq1, --out\n";
+    wpod2usage();
+}
+
+my %hCnt = ();
+
+print STDERR "Making a first pass and getting the full distribution..\n";
+
+my $tot = 0;
+open(IN,"zcat $fq1 | awk 'NR % 4 == 2 {print;}'|") || die "Cannot open file\n";
+while(<IN>) {
+    print STDERR "Reading line $.\n" if ( $. % 1000000 == 0 );
+    chomp;
+    my $barcode = substr($_,0,$lenCellBarcode);
+    $hCnt{$barcode} = 0 unless ( defined($hCnt{$barcode}) );
+    ++$hCnt{$barcode};
+    ++$tot;
+}
+close IN;
+
+print STDERR "Making a second pass and trying to correct....\n";
+
+my $
+
+open(IN,"zcat $fq1 | awk 'NR % 4 == 2 {print;}'|") || die "Cannot open file\n";
+while(<IN>) {
+    print STDERR "Reading line $.\n" if ( $. % 1000000 == 0 );
+    chomp;
+    my $barcode = substr($_,0,$lenCellBarcode);
+    $hCnt{$barcode} = 0 unless ( defined($hCnt{$barcode}) );
+    ++$hCnt{$barcode};
+}
+close IN;
+
+
+
+
+my $fh1 = &zopen($fq1);
+
+my @fq = ();
+my %cntBarcodes = ();
+
+for( my $i=0; &readFQ($fh1,$fh2,\@fq) > 0; ++$i ) {
+    print STDERR "Processing $i FASTQ records...\n" if ( $i % 500000 == 0 );
+
+    my @bases = split(//,$fq[1]);
+    my @quals = split(//,$fq[3]);
+
+    for(my $i=0; $i < @quals; ++$i) {
+	if ( ord($quals[$i]) < ord(' ') + $Qthres ) {  ## quality less than $Qthres
+	    $bases[$i] = lc($bases[$i]);
+	}
+    }
+
+    my $barcode = join("",@bases[0..($lenCellBarcode-1)]);
+    my $umi = join("",@bases[($lenCellBarcode)..($lenCellBarcode+$lenUMI-1)]);
+
+    my $ucBarcode = uc($barcode);
+    $cntBarcodes{$ucBarcode} = 0 unless ( defined($cntBarcodes{$ucBarcode}) );
+    ++$cntBarcodes{$ucBarcode};
+
+    print OUT "$fq[0]:$barcode:$umi\n$fq[2]\n+\n$fq[4]\n";
+}
+
+$fh1->close();
+$fh2->close();
+close OUT;
+
+## Step 1b. Create the CDF of the barcode counts
+open(DAT,">$out.barcode.counts.dat") || die "Cannot open file\n";
+foreach my $barcode(keys %cntBarcodes) {
+    print DAT join("\t",$barcode,$cntBarcodes{$barcode})."\n";
+}
+close DAT;
+
+open(R,">$out.barcode.counts.R") || die "Cannot open file\n";
+print R "M <- read.table('$out.barcode.counts.dat',header=F)\n";
+print R "total <- sum(M[,2])\n";
+print R "fracSorted <- cumsum(sort(M[,2], decreasing=TRUE))/total\n";
+print R "pdf(file='$out.barcode.counts.pdf',width=8,height=6)\n";
+print R "plot(1:$maxCell,fracSorted[1:$maxCell],xlab='Number of cell barcodes',ylab='Fraction of reads')\n";
+print R "dev.off()\n";
+close R;
+
+&forkExecWait("$Rscript $out.barcode.counts.R");
+
+## Step 3. Align the reads with tophat2
+
+my $cmd = "$tophat -o $out --library-type fr-unstranded --rg-id $sampleID  --rg-sample $sampleID --rg-library rna-seq --rg-platform Illumina -p $threads -G $gtf $index $out.barcoded.fastq 2>> $out.log";
+#&forkExecWait($cmd);
+
+$cmd = "rm -f $out.barcoded.fastq";
+#&forkExecWait($cmd);
+
+## read paired-end FASTQ file
+## Return array with five elements
+## 0. ReadName
+## 1. First Sequence
+## 2. Second sequence
+## 3. First Quality
+## 4. Second Quality
+sub readFQ {
+    my ($fh1,$fh2,$ref) = @_;
+    my $line1 = $fh1->getline();
+    return 0 unless ( defined($line1) );
+    ($line1) = split(/[\s\/]/,$line1);
+    ($ref->[0]) = split(/[\s\/]/,$fh2->getline());
+    die "$line1 != ".($ref->[0])."\n" if ( $line1 ne $ref->[0] );
+    $ref->[1] = $fh1->getline();
+    $ref->[2] = $fh2->getline();
+    my $dummy = $fh1->getline();
+    my $dummy2 = $fh2->getline();
+    $ref->[3] = $fh1->getline();
+    $ref->[4] = $fh2->getline();
+
+    chomp($ref->[1]);
+    chomp($ref->[2]);
+    chomp($ref->[3]);
+    chomp($ref->[4]);    
+    
+    return 1;
+}

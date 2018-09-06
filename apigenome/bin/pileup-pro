@@ -1,0 +1,231 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+use wGetOptions qw(wpod2usage wGetOptions);    
+use hyunlib qw(makeMake forkExecWait zopen wopen);
+
+my $bam = "";
+my $out = "";
+my $samtools = "samtools";
+my $umilen = 8;
+my $region = "";
+my $minMQ = 0;
+
+wGetOptions(
+    "-Calculate the pileup of the PROcap/seq reads",
+    "--Key Options",
+    "bam=s" => [\$bam, "Input BAM file aligned to genome"],
+    "out=s" => [\$out, "Output file prefix"],
+    "--Additional Options",    
+    "samtools=s" => [\$samtools, "Path for samtools"],
+    "umi-len=i" => [\$umilen, "Length of the UMI (assume to be at the end of read name)"],
+    "region=s" => [\$region, "Genomic regions to focus on"],
+    "minMQ=s" => [\$minMQ, "Minimum mapping quality"],
+    ) || wpod2usage(2);
+
+if ( !$bam || !$out ) {
+    print STDERR "Missing required options : --bam, --out \n";
+    wpod2usage();
+}
+
+die "Cannot find $bam.bai file\n" if ( ( $region ) && ( ! -s "$bam.bai" ) );
+
+my @fwdPos = ();
+my @fwdCnt = ();
+my @revPos = ();
+my @revCnt = ();
+my ($curChr,$curLeft,$win) = ("",0,1000);
+    
+open(IN,"$samtools view $bam $region|") || die "Cannot open $bam\n";
+open(OUT,"| bgzip -c > $out") || die "Cannot open file\n";
+while(<IN>) {
+    my ($rname,$flag,$chr,$pos,$mq,$cigar,$rnext,$pnext,$tlen,$seq,$qual) = split;
+    next if ( $flag & 0xf04 );
+    my $umi = substr($rname,0-$umilen);
+    if ( $flag & 0x10 ) { ## reverse strand
+	## calculate the end position from cigar string
+	$pos = endPos($pos,$cigar);
+	addPos($chr,$pos,$umi,\@revPos,\@revCnt);
+    }
+    else {  ## forward strand
+	addPos($chr,$pos,$umi,\@fwdPos,\@fwdCnt);	
+    }
+}
+printPosCounts(1e9);
+close IN;
+close OUT;
+
+&forkExecWait("tabix -pbed $out");
+
+sub printPosCounts {
+    #print STDERR "printPosCounts(@_) called\n";
+    my $toPos = $_[0];
+    my ($i,$j) = (0,0);
+    my ($nf,$nr) = ($#fwdPos+1,$#revPos+1);
+
+    #print OUT "----$toPos -- @fwdPos -- @revPos\n";
+    
+    while ( ( $i < $nf ) || ( $j < $nr ) ) {
+	if ( $i == $nf ) {   ## fwd is empty only rev exists
+	    last if ( $revPos[$j] > $toPos );
+	    
+	    ## print rev Content
+	    my ($ucnt,$dcnt,$uhash) = @{$revCnt[$j]};
+	    print OUT join("\t",$curChr,$revPos[$j]-1,$revPos[$j],$ucnt, "0", "0", $ucnt, $dcnt);
+	    print OUT "\t.\t";
+	    foreach my $key (sort keys %{$uhash}) {
+		print OUT "$key:".($uhash->{$key}).",";
+	    }
+	    print OUT "\n";
+	    ++$j;
+	}
+	elsif ( $j == $nr ) {
+	    last if ( $fwdPos[$i] > $toPos );
+
+	    ## print fwd Content
+	    my ($ucnt,$dcnt,$uhash) = @{$fwdCnt[$i]};
+	    print OUT join("\t",$curChr,$fwdPos[$i]-1,$fwdPos[$i],$ucnt, $ucnt, $dcnt, 0, 0);
+	    print OUT "\t";
+	    foreach my $key (sort keys %{$uhash}) {
+		print OUT "$key:".($uhash->{$key}).",";
+	    }
+	    print OUT "\t.\n";	    
+	    ++$i;	    
+	}
+	elsif ( $fwdPos[$i] == $revPos[$j] ) {
+	    last if ( $fwdPos[$i] > $toPos );
+
+	    ## print fwd and rev content
+
+	    ## print fwd Content
+	    my ($ucntf,$dcntf,$uhashf) = @{$fwdCnt[$i]};
+	    my ($ucntr,$dcntr,$uhashr) = @{$revCnt[$j]};
+	    
+	    print OUT join("\t",$curChr,$fwdPos[$i]-1,$fwdPos[$i],$ucntf > $ucntr ? $ucntf : $ucntr, $ucntf, $dcntf, $ucntr, $dcntr);
+	    print OUT "\t";
+	    foreach my $key (sort keys %{$uhashf}) {
+		print OUT "$key:".($uhashf->{$key}).",";
+	    }
+	    print OUT "\t";
+	    foreach my $key (sort keys %{$uhashr}) {
+		print OUT "$key:".($uhashr->{$key}).",";
+	    }
+	    print OUT "\n";	    	    
+	    ++$i;
+	    ++$j;
+	}
+	elsif ( $fwdPos[$i] < $revPos[$j] ) {
+	    last if ( $fwdPos[$i] > $toPos );
+
+	    ## print fwd Content
+	    my ($ucnt,$dcnt,$uhash) = @{$fwdCnt[$i]};
+	    print OUT join("\t",$curChr,$fwdPos[$i]-1,$fwdPos[$i],$ucnt, $ucnt, $dcnt, 0, 0);
+	    print OUT "\t";
+	    foreach my $key (sort keys %{$uhash}) {
+		print OUT "$key:".($uhash->{$key}).",";
+	    }
+	    print OUT "\t.\n";	    
+	    ++$i;	    	    
+	}
+	else {
+	    last if ( $revPos[$j] > $toPos );
+
+	    ## print rev Content
+	    my ($ucnt,$dcnt,$uhash) = @{$revCnt[$j]};
+	    print OUT join("\t",$curChr,$revPos[$j]-1,$revPos[$j],$ucnt, "0", "0", $ucnt, $dcnt);
+	    print OUT "\t.\t";	    
+	    foreach my $key (sort keys %{$uhash}) {
+		print OUT "$key:".($uhash->{$key}).",";
+	    }
+	    print OUT "\n";	    
+	    ++$j;	    
+	}
+    }
+
+    #print OUT "----\n";
+
+    ## remove the printed contents
+    splice(@fwdPos,0,$i);
+    splice(@fwdCnt,0,$i);    
+    splice(@revPos,0,$j);
+    splice(@revCnt,0,$j);        
+}
+
+sub addPos {
+    my ($chr,$pos,$umi,$rPos,$rCnt) = @_;
+
+    my $n = $#{$rPos}+1;        
+
+    if ( $chr ne $curChr ) {
+	## print out all
+	print "Processing chr$chr..\n";
+	printPosCounts(1e9);
+	$curChr = $chr;
+    }
+    elsif ( ( $n > 0 ) && ( $pos - $rPos->[0] > $win ) ) {
+	printPosCounts($pos-$win);
+    }
+
+    $n = $#{$rPos}+1;    
+
+    ## search where to insert
+    if ( $n > 0 ) {
+	for(my $i=$n-1; $i >=0; --$i) {
+	    if ( $rPos->[$i] == $pos ) { ## if the same position exists
+		my $s = $rCnt->[$i];
+		if ( defined( $s->[2]->{$umi} ) ) {
+		    ++($s->[2]->{$umi}); ## increase the UMI counts
+		    ++($s->[1]);    ## increase dup counts
+		}
+		else {
+		    $s->[2]->{$umi} = 1;
+		    ++($s->[0]);
+		    ++($s->[1]);		
+		}
+		last;
+	    }
+	    elsif ( $rPos->[$i] < $pos ) { ## if the position do not exist
+		## add an element right next to $i
+		splice(@{$rPos}, $i+1, 0, $pos);
+		splice(@{$rCnt}, $i+1, 0, [1, 1, {$umi => 1}]);
+		last;
+	    }
+	    
+	    if ( $i == 0 ) { ## append at the beginning
+		splice(@{$rPos}, 0, 0, $pos);
+		splice(@{$rCnt}, 0, 0, [1, 1, {$umi => 1}]);
+		last;	    
+	    }
+	}
+    }
+    else {
+	push(@{$rPos}, $pos);
+	push(@{$rCnt}, [1, 1, {$umi => 1}]);
+    }
+}
+
+sub endPos {
+    my ($pos,$cigar) = @_;
+
+    my $end = $pos;
+    if ( $cigar =~ /^(\d+)([MINDS])/ ) {
+	my ($cn,$op) = ($1,$2);
+	$cigar = substr($cigar,length($cn)+length($op));
+	if ( $op =~ /^[MND]$/ ) {
+	    $end += $cn;
+	}
+	elsif ( $op =~ /^[IS]$/ ) {
+	    # nothing
+	}
+	else {
+	    die "Cannot recognize cigar op $op\n";
+	}
+    }
+    elsif ( $cigar ) {
+	die "Cannot recognize cigar string $cigar\n";	
+    }
+    return ($end-1);
+}
+

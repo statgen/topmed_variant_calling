@@ -1,0 +1,223 @@
+#!/usr/bin/perl -w
+
+use strict;
+use POSIX qw(pow log10 sqrt);
+use lib '/net/fantasia/home/hmkang/bin/utils';
+use wGetOptions qw(wpod2usage wGetOptions);
+
+## vcf-resolve-chrX.pl
+##
+## Resolve heterozygous genotypes in chrX based on known sex information
+##
+## Input file needed
+## 1) VCF file with GT and (GL or PL) field, where some samples are related to each other
+## 2) PED file containing the individual ID and known sex information.
+##
+## Output
+## Output is VCF file with non-heterozygous genotypes in non-PAR region of chrX
+## The VCF has diploid representation of male genotypes without heterozygosity at non-PAR regions,
+## or it has haploid representation of male genotypes.
+
+my $vcf = "";
+my $out = "";
+my $ped = "";
+my $field = "PL";
+my $usephred = "";
+my $xStart = 2699521;
+my $xEnd = 154931043;
+my $maleHaploid = "";
+
+wGetOptions(
+    "-Resolution of chrX heterozygosity",
+    "--Required Options",
+    "ped=s" => [\$ped, "Pedigree file", "Pedigree file in PED format with parents and sex information available"],
+    "vcf=s" => [\$vcf, "Input VCF file", "Input VCF file with GL/PL information available"],
+    "out=s" => [\$out, "Output file", "Output VCF file with heterozygous genotypes resolved"],
+    "--Additional Options",
+    "xStart=i" => [\$xStart, "Base position where non-PAR region starts"],
+    "xEnd=i" => [\$xEnd, "Base position where non-PAR region ends"],
+    "field=s" => [\$field, "Field to be used to represent genotype likelihoods (e.g. PL, GL)"],
+    "use-phred" => [\$usephred, "When field is not GL or PL, specify whether to use phred-scale likelihood or not"],
+    "male-haploid" => [\$maleHaploid, "Use haploid representations for male haplotypes"],
+    ) || wpod2usage(2);
+
+unless ( ( $vcf ) && ( $out ) && ( $ped ) ) {
+    print STDERR "ERROR: Missing required option\n";
+    wpod2usage(2);
+}
+
+if ( $field eq "PL" ) { $usephred = 1; }
+elsif ( $field eq "GL" ) { $usephred = ""; }
+
+$usephred = -1 unless ( defined($usephred) );
+
+## Build PL to error array
+my @PL2e = ();
+for(my $i=0; $i < 256; ++$i) {
+    push(@PL2e,pow(0.1,$i/10));
+}
+for(my $i=256; $i < 100000; ++$i) {
+    push(@PL2e,$PL2e[255]);
+}
+
+my %hsex = ();
+open(IN,$ped) || die "Cannot open file\n";
+while(<IN>) {
+    next if ( /^#/ );
+    my ($fid,$iid,$dad,$mom,$sex,$pheno) = split;
+    die "Multiple individuals with same ID $iid\n" if ( defined($hsex{$iid}) );
+    if ( ( $sex == 1 ) || ( $sex == 2 ) ) {
+	$hsex{$iid} = $sex;
+    }
+}
+close IN;
+
+if ( $vcf =~ /\.gz/ ) {
+    die "Cannot open $vcf\n" unless ( -s $vcf );
+    #open(IN,"tabix -h $vcf X:$xStart|");
+    open(IN,"zcat $vcf |");    
+}
+else {
+    open(IN,$vcf) || die "Cannot open $vcf\n";
+}
+
+if ( $out =~ /\.gz/ ) {
+    open(OUT,"| bgzip -c > $out") || die "Cannot open file\n";
+}
+else {
+    open(OUT,">$out") || die "Cannot open file\n";
+}
+
+my @sexes = ();
+my @nhets = ();
+my $nvars = 0;
+my $tothets = 0;
+my $nmales = 0;
+while(<IN>) {
+    if ( /^#/ ) {
+	print OUT $_;
+	if ( /^#CHROM/ ) {
+	    my @F = split(/[\t\r\n ]+/);
+	    for(my $i=9; $i < @F; ++$i) {
+		if ( defined($hsex{$F[$i]}) ) {
+		    push(@sexes,$hsex{$F[$i]});
+		    ++$nmales if ( $hsex{$F[$i]} == 1 );
+		}
+		else {
+		    warn "WARNING: Individual $F[$i] does not have sex information in PED file $ped. Considering as females and heterozygous resolution will not be attempted\n";
+		    push(@sexes,2);
+		}
+	    }
+	    @nhets = (0) x ($#F-8);
+	}
+    }
+    else {
+	my @F = split(/[\t\r\n ]+/);
+	
+	if ( ( $F[0] ne "X" ) && ( $F[0] ne "chrX" ) ) {
+	    die "non-chrX genotypes were observed..\n"; 
+	}
+
+	my $ispar = ( ( $F[1] < $xStart ) || ( $F[1] > $xEnd ) ) ? 1 : 0;	
+
+	if ( $F[1] % 1000 == 0 ) {
+	    if ( $ispar == 0 ) {
+		print STDERR "$F[0]:$F[1]... Resolved ".sprintf("%.3lf",$tothets/($nmales+1e-6))." heterozygous genotypes per male across $nvars variants in non-PAR regions of ".sprintf("%.3lf",($F[1]-$xStart)/1e6)."Mb\n";
+	    }
+	    else {
+		print STDERR "$F[0]:$F[1]...\n";
+	    }
+	}
+	
+	## find GL/PL field
+	my $iGT;
+	my $iGL;
+	my @fmts = split(/:/,$F[8]);
+	for(my $i=0; $i < @fmts; ++$i) {
+	    if ( $fmts[$i] eq "GT" ) { $iGT = $i; }
+	    elsif ( $fmts[$i] eq $field ) { $iGL = $i; }
+	}
+
+	die join("\t",@F) unless ( defined($iGT) && defined($iGL) );
+	
+	my $nA = ( $F[4] =~ tr/,// ) + 1;
+	my @acs = split(/,/,$1) if ( $F[7] =~ /AC=([^;]+);/ );
+	my $an = $1 if ( $F[7] =~ /AN=(\d+);/ );
+	my @afs = split(/,/,$1) if ( $F[7] =~ /AF=([^;]+);/ );
+	my $af0 = 1;
+	if ( defined($acs[0]) && defined($an) ) {
+	    for(my $i=0; $i < $nA; ++$i) {
+		$acs[$i] = 0 unless ( defined($acs[$i]) );
+		$afs[$i] = $acs[$i]/$an unless ( defined($afs[$i]) );
+		$af0 -= $afs[$i];
+	    }
+	}
+	$af0 = 0 if ( $af0 < 0 );
+	unshift(@afs, $af0);
+
+	++$nvars if ( $ispar == 0 );
+
+	for(my $i=9; $i < @F; ++$i) {
+	    if ( ( $sexes[$i-9] == 1 ) && ( $ispar == 0 ) ) {
+		my @G = split(/:/,$F[$i]);
+		if ( $G[$iGT] =~ /^\./ ) {
+		    $G[$iGT] = "." if ( $maleHaploid );
+		}
+		else {
+		    my ($g1,$sep,$g2) = split(//,$G[$iGT]);
+		    if ( $g1 ne $g2 ) {
+			die join("\t",@F) unless ( $g1 =~ /\d+/ );
+			
+			++$nhets[$i-9];
+			++$tothets;
+			my $ig11 = $g1*($g1+1)/2;
+			my $ig12 = ($g1 < $g2 ) ? ( $g2*($g2+1)/2 + $g1 ) : ( $g1*($g1+1)/2 + $g2 ); 
+			my $ig22 = $g2*($g2+1)/2;		    
+			
+			my @GLs = split(/,/,$G[$iGL]);
+			if ( $G[$iGL] =~ /^\./ ) {
+			    @GLs = (0) x (($nA+1)*($nA+2)/2);
+			}
+			
+			if ( $GLs[$ig11]*$usephred < $GLs[$ig12]*$usephred ) {     ## R/R > R/A
+			    if ( $GLs[$ig22]*$usephred < $GLs[$ig11]*$usephred ) { ## A/A > R/R > R/A
+				$G[$iGT] = ($maleHaploid) ? $g2 : "$g2$sep$g2";
+			    }
+			    else {  ## R/R > A/A ~ R/A
+				$G[$iGT] = ($maleHaploid) ? $g1 : "$g1$sep$g1";	
+			    }
+			}
+			elsif ( $GLs[$ig22]*$usephred < $GLs[$ig12]*$usephred ) { ## A/A > R/A > R/R
+			    $G[$iGT] = ($maleHaploid) ? $g2 : "$g2$sep$g2";
+			}
+			else { ## R/A > A/A ~ R/R
+			    if ( $GLs[$ig22]*$usephred == $GLs[$ig11]*$usephred ) {
+				if ( ($afs[$g2]+1e-6)*rand() > ($afs[$g1]+1e-6)*rand() ) {
+				    $G[$iGT] = ($maleHaploid) ? $g2 : "$g2$sep$g2";
+				}
+				else {
+				    $G[$iGT] = ($maleHaploid) ? $g1 : "$g1$sep$g1";
+				}
+			    }
+			    elsif ( $GLs[$ig22]*$usephred < $GLs[$ig11]*$usephred ) {
+				$G[$iGT] = ($maleHaploid) ? $g2 : "$g2$sep$g2";
+			    }
+			    else {
+				$G[$iGT] = ($maleHaploid) ? $g1 : "$g1$sep$g1";
+			    }
+			}
+		    }
+		    else {
+			$G[$iGT] = ($maleHaploid) ? $g1 : "$g1$sep$g1";
+		    }
+		}
+		
+		$F[$i] = join(":",@G);
+	    }
+	}
+	print OUT join("\t",@F);
+	print OUT "\n";
+    }
+}
+close IN;
+close OUT;

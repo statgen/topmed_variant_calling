@@ -1,0 +1,126 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+use wGetOptions qw(wpod2usage wGetOptions);    
+use hyunlib qw(makeMake forkExecWait zopen wopen readBin);
+
+my $ref = "";
+my 
+my $cel = "";
+my $out = "";
+my $forceBinary = "";
+my $forceText = "";
+
+wGetOptions(
+    "-Run DeltaSVM (Lee et al. 2015) directly on the VCF file",
+    "--Key Options",
+    "cel=s" => [\$cel, "Input CEL file to extract the intensity"],
+    "out=s" => [\$out, "Output file"],
+    "--Additional Options",
+    "force-binary" => [\$forceBinary, "Force to read the input file binary CEL format (version 4)"],
+    "force-text" => [\$forceText, "Force to read the input file text CEL format (version 3)"],    
+    ) || wpod2usage(2);
+
+if ( !$cel || !$out ) {
+    print STDERR "Missing required options : --in, --out\n";
+    wpod2usage();
+}
+
+my $fh = zopen($cel);
+my $fo = wopen($out);
+
+my $magic = readBin($fh, 4, 'l');
+if ( ( $forceBinary ) || ( ( !$forceText ) && ( $magic == 64 ) ) ) {  ## if --force-binary is ON, or --force-text is not ON, and the file is detected to be a binary format
+    my $vn = readBin($fh, 4, 'l');
+    my $ncol = readBin($fh, 4, 'l');
+    my $nrow = readBin($fh, 4, 'l');
+    my $ncell = readBin($fh, 4, 'l');
+    my $lheader = readBin($fh, 4, 'l');
+    read($fh, my $header, $lheader);
+    my $lalgname = readBin($fh, 4, 'l');
+    read($fh, my $algname, $lalgname);    
+    my $lalgparam = readBin($fh, 4, 'l');
+    read($fh, my $algparam, $lalgparam);        
+    my $cellmargin = readBin($fh, 4, 'l');
+    my $noutliers = readBin($fh, 4, 'L');
+    my $nmasked = readBin($fh, 4, 'L');
+    my $nsubgrids = readBin($fh, 4, 'l');
+
+    print {$fo} "##Cols=$ncol\n";
+    print {$fo} "##Rows=$nrow\n";
+    print {$fo} "##Algorithm=$algname\n";
+    print {$fo} "##AlgorithmParameters=$algparam\n";     
+    print {$fo} "##INTENSITY=$ncell\n";
+    print {$fo} "#X\tY\tMEAN\tSTDV\tNPIXELS\n";
+    for(my $i=0; $i < $ncell; ++$i) {
+	my $val = sprintf("%.1lf",readBin($fh, 4, 'f'));
+	my $stdev = sprintf("%.1lf",readBin($fh, 4, 'f'));
+	my $npix = readBin($fh, 2, 's');
+	print {$fo} join("\t",$i % $nrow, int($i / $ncol), $val, $stdev, $npix)."\n";
+    }
+    if ( $nmasked > 0 ) {
+	print {$fo} "##MASK=$nmasked\n";
+	print {$fo} "#X\tY\n";
+	for(my $i=0; $i < $nmasked; ++$i) {
+	    my $x = readBin($fh, 2, 's');
+	    my $y = readBin($fh, 2, 's');	    
+	    print {$fo} join("\t", $x, $y)."\n";
+	}	
+    }
+    if ( $noutliers > 0 ) {
+	print {$fo} "##OUTLIERS=$noutliers\n";
+	print {$fo} "#X\tY\n";
+	for(my $i=0; $i < $noutliers; ++$i) {
+	    my $x = readBin($fh, 2, 's');
+	    my $y = readBin($fh, 2, 's');	    
+	    print {$fo} join("\t", $x, $y)."\n";
+	}		
+    }
+    if ( $nsubgrids > 0 ) {
+	print {$fo} "##SUBGRIDS=$nsubgrids\n";
+	print {$fo} "##CURRENTLY NOT SUPPORTED\n";
+    }
+}
+else {
+    $fh->close();
+    $fh = zopen($cel);    
+    my $line;
+    my $section = "";
+    while( defined($line = $fh->getline()) ) {
+	if ( $line =~ /^\[(\S+)\]/ ) {
+	    $section = $1;
+	}
+	elsif ( $section eq "HEADER" ) {
+	    $line =~ s/^\s+//;	    
+	    chomp $line;
+	    next unless ( $line );
+	    print {$fo} "##$line\n";
+	}
+	elsif ( $section ) {
+	    $line =~ s/^\s+//;
+	    chomp $line;
+	    next unless ( $line );	    
+	    if ( $line =~ /^NumberCells=(\d+)/ ) {
+		#die;
+		print {$fo} "##$section=$1\n";
+	    }
+	    elsif ( $line =~ /^CellHeader=(.+)$/ ) {
+		print {$fo} "#$1\n";		
+	    }
+	    else {
+		my @F = split(/[\t\r\n ]+/,$line);
+		if ( $F[0] =~ /^\d+/ ) {
+		    print {$fo} join("\t",@F)."\n";
+		}
+		else {
+		    print STDERR "Skipping.. $section @F\n";
+		}
+	    }
+	}
+    }
+}
+
+$fo->close();
+

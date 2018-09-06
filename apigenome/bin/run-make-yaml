@@ -1,0 +1,87 @@
+#!/usr/bin/perl -w
+
+use strict;
+#use lib '/net/fantasia/home/hmkang/bin/utils';
+use FindBin;
+use lib $FindBin::Bin;
+use wGetOptions qw(wpod2usage wGetOptions);    
+use hyunlib qw(makeMake forkExecWait);
+use lib "$FindBin::Bin/../lib/perl5";
+use YAML::AppConfig;
+
+my @cmds = ();
+my $yamlf = "";
+my $numjobs = 0;
+my $mosixopt = ""; #"-E/tmp -j\`/net/fantasia/home/gjun/bin/pick_mainnode\`";
+my $restart = "";
+my $out = "";
+my $repeatchr = "";
+my $autosomes = "";
+
+wGetOptions(
+    "-Run Make -- Submit jobs on cluster using MOSIX & GNU Make",
+    "--Key Options",
+    "list=s" => [\$listf, "Input file containing a list of commands to run at each line"],
+    "cmd=s" => [\@cmds, "Additional Command line to run"],
+    "numjobs=s" => [\$numjobs, "Number of jobs to run concurrently"],
+    "--Additional Options",
+    "out=s" => [\$out, "Output prefix"],
+    "mosixopt=s" => [\$mosixopt, "MOSIX opitions"],
+    "restart",[\$restart, "Ignore previous runs and restart the jobs"],
+    "repeat-chr",[\$repeatchr, "Repeat commands by chromosomes. The command must contain chr1"],
+    "autosomes",[\$autosomes, "Repeat commands only on autosomes"],
+    ) || wpod2usage(2);
+
+if ( (! $listf ) && ( $#cmds < 0 ) )  {
+    print STDERR "--list or command option is required\n";
+    wpod2usage();
+}
+
+if ( $listf ) {
+    open(IN,$listf) || die "Cannot open file $listf\n";
+    while(<IN>) {
+	chomp;
+	push(@cmds,$_);
+    }
+    close IN;
+}
+
+unless ($out) {
+    unless ( $listf ) {
+	print STDERR "--out is required\n";
+	wpod2usage();
+    }
+    $out = "$listf.runmake";
+}
+
+if ( $repeatchr ) {
+    my @chrs = (1..22);
+    unless ( $autosomes ) {
+	push(@chrs,"X");
+	push(@chrs,"Y");	
+    }
+    my @newcmds = ();
+    foreach my $cmd (@cmds) {
+	if ( $cmd =~ /chr1/ ) {
+	    foreach my $chr (@chrs) {
+		my $newcmd = $cmd;
+		$newcmd =~ s/chr1/chr$chr/g;
+		push(@newcmds,$newcmd);
+	    }
+	}
+	else {
+	    print STDERR "Command $cmd does not have chr1. Adding only once...\n";
+	    push(@newcmds,$cmd);
+	}
+    }
+    @cmds = @newcmds;
+}
+
+&makeMake($out,$mosixopt,@cmds);
+
+if ( $numjobs > 0 ) {
+    &forkExecWait("make -f $out.Makefile -j $numjobs".($restart ? " -B" : ""));
+}
+else {
+    print "--numjobs is not specified. Run make -f $out.Makefile -j [num-of-jobs] yourself\n";
+}

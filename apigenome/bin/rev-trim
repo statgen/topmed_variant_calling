@@ -1,0 +1,59 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+use wGetOptions qw(wpod2usage wGetOptions);    
+use hyunlib qw(makeMake forkExecWait zopen wopen);
+
+my $in = "/dev/stdin";
+my $out = "/dev/stdout";
+my $len = 32;
+
+wGetOptions(
+    "-Reverse complement and trim reads",
+    "--Key Options",
+    "in=s" => [\$in, "Input file"],
+    "out=s" => [\$out, "Output file"],
+    "len=i" => [\$len, "Length to trim"],        
+    ) || wpod2usage(2);
+
+my $fin = zopen($in);
+my $fout = wopen($out);
+
+while(1) {
+    my $rn = $fin->getline();
+
+    last unless ( defined($rn) );
+    my $seq = $fin->getline();
+    my $plus = $fin->getline();
+    my $qual = $fin->getline();
+    die unless ( $plus =~ /^\+/ );
+
+    chomp($seq);
+    my $rcSeq = reverse_complement($seq);
+    chomp($qual);
+    my $rQual = reverse($qual);
+    my $l = length($rcSeq);
+
+    if ( $l > $len ) {
+	$rcSeq = substr($rcSeq,0,$len);
+	$rQual = substr($rQual,0,$len);	
+    }
+
+    print {$fout} "$rn$rcSeq\n$plus$rQual\n";
+}
+$fin->close();
+$fout->close();
+
+sub reverse_complement {
+    my $dna = shift;
+    
+    # reverse the DNA sequence
+    my $revcomp = reverse($dna);
+    
+    # complement the reversed DNA sequence
+    $revcomp =~ tr/ACGTacgt/TGCAtgca/;
+    return $revcomp;
+}
+

@@ -1,0 +1,46 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+use wGetOptions qw(wpod2usage wGetOptions);    
+use hyunlib qw(makeMake forkExecWait zopen wopen);
+
+my @ins = ();
+
+wGetOptions(
+    "-Produce a joint list of multiple files",
+    "--Key Options",
+    "in=s" => [\@ins, "Input text files"],
+    ) || wpod2usage(2);
+
+if ( $#ins < 0 ) {
+    print STDERR "Missing required input --in\n";
+    wpod2usage(2);
+}
+
+my %h = ();
+my %c = ();
+for(my $i=0; $i < @ins; ++$i) {
+    #chomp;
+    open(IN,$ins[$i]) || die "Cannot open $ins[$i]";
+    my %d = ();
+    while(<IN>) {
+	my ($id,@F) = split;
+	unless ( defined($h{$id}) ) {
+	    $h{$id} = [];
+	}
+	push(@{$h{$id}},@F);
+	if ( defined($d{$id}) ) {
+	    die "Duplicate key $id in $ins[$i]\n";
+	}
+	$d{$id} = 1;
+	++$c{$id};
+    }
+    close IN;
+}
+
+foreach my $id (sort keys %h) {
+    next if ( $c{$id} < $#ins+1 );
+    print join("\t",$id,@{$h{$id}})."\n";
+}

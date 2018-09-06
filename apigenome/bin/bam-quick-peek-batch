@@ -1,0 +1,71 @@
+#!/usr/bin/perl -w
+
+use strict;
+use POSIX qw(strftime);
+use FindBin;
+use lib $FindBin::Bin;
+use wGetOptions qw(wpod2usage wGetOptions);
+use hyunlib qw(makeMake forkExecWait);
+
+my $dir = "";
+my $samtools = "/usr/cluster/bin/samtools";
+my $out = "";
+my $numjobs = 100;
+my $keeptmp = "";
+my $options = "";
+
+wGetOptions(
+    "-Print basic information of a large number of BAM files",
+    "-Using the companion software bam-quick-peek-each, this software examines BAM files and produce basic statistics, such as (1) size of BAM files, (2) existence of index file, (3) exitence of EOF marker (4) number of readGroups, (5) sample ID, (6) date of sequencing, (7) Timestamp of BAM files, and (8) Summary of error messages", 
+    "--Required Options",
+    "dir=s" => [\$dir, "Directory to scan"],
+    "out=s" => [\$out, "Output directory"],
+    "--Additional Options",
+    "samtools=s" => [\$samtools,"File path of samtools binary file"],
+    "numjobs=i" => [\$numjobs,"Number of jobs to run in parallel"],
+    "keep-tmp" => [\$keeptmp,"Keep temporary files"],
+    "options=s" => [\$options,"Additional options to pass onto bam-quick-peek-each software"],
+    ) || wpod2usage(2);
+
+unless ( ( $dir ) && ( $out ) ) {
+    print STDERR "ERROR: Missing required option\n";
+    wpod2usage(2);
+}
+
+$dir =~ s/\/$//g;       ## remove trailing slashes
+
+print STDERR "Scanning $dir...\n";
+
+open(IN,"find -L $dir/ -name '*.bam'|") || die "Cannot search from $dir\n";
+my @cmds = ();
+
+for(my $i=0;<IN>; ++$i) {
+    chomp;
+    push(@cmds,"perl $FindBin::Bin/bam-quick-peek-each --samtools $samtools --bam $_ $options --out $out.tmp/".sprintf("%09d",$i+1).".peek");
+}
+close IN;
+
+print STDERR "Identified ".($#cmds+1)." BAM files to check";
+
+die "No BAM file was found under $dir\n" if ( $#cmds < 0 );
+
+&makeMake("$out.tmp","",@cmds);
+
+print STDERR "Running $numjobs parallele jobs... It will take a while to finish..\n";
+&forkExecWait("make -f $out.tmp.Makefile -j $numjobs > $out.tmp/log.stdout 2> $out.tmp/log.stderr");
+
+open(OUT,">$out") || die "Cannot open file\n";
+for(my $i=0; $i < @cmds; ++$i) {
+    open(IN,"$out.tmp/".sprintf("%09d",$i+1).".peek") || die "Cannot open $out.tmp/".sprintf("%09d",$i+1).".peek";
+    my $hdr = <IN>;
+    print OUT $hdr if ( $i == 0 );
+    my $line = <IN>;
+    print OUT $line;
+    close IN;
+}
+close OUT;
+
+unless ( $keeptmp ) {
+    &forkExecWait("rm -rf $out.tmp.Makefile $out.tmp/");
+    print STDERR "Finished cleaning up temporary files..\n";
+}

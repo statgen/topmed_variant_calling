@@ -1,0 +1,126 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+#use lib "/net/fantasia/home/hmkang/bin/utils/";
+use hyunlib qw(forkExecWait);
+use wGetOptions qw(wGetOptions wpod2usage);
+
+my $plusf = "";
+my $minusf = "";
+my $outf = "";
+my $min = -1000;
+my $max = 1000;
+my $bin = 1;
+my $thresMult = 1;
+my $thresAdd = 1;
+my $thresMin = 1;
+my $binbgzip = "bgzip";
+my $bintabix = "tabix";
+
+wGetOptions(
+    "-Match TSS sites from PRO-cap data written in BED format",
+    "--Required Options",
+    "plus=s",[\$plusf,"BED format file for plus strand"],
+    "minus=s",[\$minusf,"BED format file for minus strand"],
+    "out=s",[\$outf,"Output prefix"],
+    "--Additional Options",
+    "min=i",[\$min,"Minimum distance from plus to minus (negative for convergent transcripts)"],
+    "max=i",[\$max,"Maximum distance from plus to minus (negative for convergent transcripts)"],
+    "bin=i",[\$bin,"Bin the base position by a specified resolution"],
+    "thres-mult=i",[\$thresMult,"Threshold for the multiplication of depths between matching base positions"],
+    "thres-add=i", [\$thresAdd,"Threshold for the addition of depths between matching base positions"],
+    "thres-min=i", [\$thresMin,"Threshold for the minimum depths between matching base positions"],        
+    ) || wpod2usage(2);
+
+unless ( ( $plusf ) && ( $minusf ) && ( $outf ) ) {
+    print STDERR "Missing required files";
+    wpod2usage(2);
+}
+
+## Load everything in memory for convenience. Assume that the input BED file may not be sorted, so try to sort it.
+my $rP = &openBedGraph($plusf,$bin,$thresMin);
+my $rM = &openBedGraph($minusf,$bin,$thresMin);
+
+if ( $outf =~ /.gz/ ) {
+    open(OUT,"| sort -k1,1 -k2,2n -k3,3n | $binbgzip -c > $outf") || die "Cannot open $outf for writing\n";  ## sort output by coordinates 
+}
+else {
+    open(OUT,"| sort -k1,1 -k2,2n -k3,3n > $outf") || die "Cannot open $outf for writing\n";  ## sort output by coordinates     
+}
+
+foreach my $chr (sort keys %{$rM}) {  ## iterate each chromosome
+    if ( defined($rP->{$chr}) ) { ## check whether plus strand also exists for the chromosome
+	print STDERR "Processing $chr......";
+	my $cM = $rM->{$chr}; ## reference to the array of chromosome
+	my $cP = $rP->{$chr}; 
+	my $nP = $#{$cP}+1;   ## total number of entries;
+	my ($beg,$end) = (0,0);
+	my $nout = 0;
+	foreach my $r (@{$cM}) {
+	    my ($bM,$dM) = @{$r};
+	    while ( ( $beg < $nP ) && ( $cP->[$beg]->[0] < $bM+$min ) ) { ++$beg; }  ## beg becomes the minimum index within the window.
+	    while ( ( $end < $nP ) && ( $cP->[$end]->[0] < $bM+$max ) ) { ++$end; }  ## end becomes the minimum index outside the right-side of window.
+	    for(my $i=$beg; $i < $end; ++$i) {
+		my ($bP,$dP) = @{$cP->[$i]};
+		unless ( ( $dP*$dM < $thresMult ) || ( $dP+$dM < $thresAdd ) ) {
+		    if ( $bM < $bP ) {
+			print OUT join("\t",$chr,$bM-1,$bP,$dP*$dM,"div",$bP-$bM,$dP,$dM)."\n";
+		    }
+		    else {
+			print OUT join("\t",$chr,$bP-1,$bM,$dP*$dM,"conv",$bP-$bM,$dP,$dM)."\n";
+		    }
+		    ++$nout;
+		}
+	    }
+	}
+	print STDERR " and printing $nout matching pairs of plus and minus positions\n";
+    }
+    else {
+	print STDERR "Skipping $chr because plus strand does not have any read in the chromosome\n";	
+    }
+}
+close OUT;
+
+if ( $outf =~ /.gz/ ) {
+    &forkExecWait("$bintabix -pbed $outf");  ## Create a tabix index
+}
+
+# Function to read bedGraph input file
+sub openBedGraph {
+    my ($file,$bin,$thresMin) = @_;
+    unless ( -s $file ) {
+	print STDERR "Cannot open $file\n";
+	wpod2usage(2);
+    }
+
+    print STDERR "Loading $file with bin size $bin and min thres $thresMin...\n";    
+
+    if ( $file =~ /.gz$/ ) { open(IN,"zcat $file | sort -k1,1 -k2,2n|") || die "Cannot open file\n"; }
+    else { open(IN,"cat $file | sort -k1,1 -k2,2n|") || die "Cannot open file\n"; }
+
+    my %h = ();
+    my $nerrs = 0;
+    my $lastpos1 = 0;
+    while(<IN>) {
+	my ($chr,$pos0,$pos1,$dp) = split;
+	$dp =~ s/^-//; ## remove minus signs if exists (for minus strands)
+	next if ( $dp < $thresMin );
+	++$nerrs if ( $pos0 + 1 != $pos1 );
+	unless ( defined($h{$chr}) ) {
+	    $h{$chr} = [];
+	}
+	$pos1 -= ($pos1 % $bin) if ( $bin > 1 );  ## make bin
+	if ( $lastpos1 == $pos1 ) {  ## if duplicated, add the depths
+	    $h{$chr}->[$#{$h{$chr}}]->[1] += $dp;
+	}
+	else {
+	    push(@{$h{$chr}},[$pos1,$dp]); ## store 1-based position and depth
+	}
+	$lastpos1 = $pos1;
+    }
+    close IN;
+    print STDERR "WARNING: $nerrs entries in $file does not have exactly 1bp difference between second and third columns\n";
+    return (\%h);
+}

@@ -1,0 +1,78 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+use hyunlib qw(initRef getCpGs);
+use wGetOptions qw(wGetOptions wpod2usage);
+
+my $rslist = "";
+my $dbsnp  = "";
+my $out = "";
+my $region = "";
+my $binbgzip = "bgzip";
+my $bintabix = "tabix";
+my $binbcftools = "bcftools";
+
+wGetOptions(
+    "-Quickly view the genotypes of the VCF file in a specified region",
+    "--Required Options",
+    "rs-list=s",[\$rslist,"A file containing the list of rsIDs"],
+    "dbsnp=s",[\$dbsnp,"Input VCF file from dbSNP"],    
+    "out=s",[\$out,"Output VCF file"],
+    "region=s",[\$region,"Region to query"],    
+    "--Additional Options",
+    "bgzip=s",[\$binbgzip,"Binary path to bgzip"],
+    "tabix=s",[\$binbgzip,"Binary path to tabix"],    
+    ) || wpod2usage(2);
+
+
+wpod2usage(2) unless ( ( $dbsnp ) && ( $region ) && ( $rslist ) && ( $out ) );
+
+if ( $out =~ /\.gz$/ ) { open(OUT,"| $binbgzip -c > $out") || die "Cannot open file\n"; }
+elsif ( $out =~ /.bcf$/ ) { open(OUT,"| $binbcftools view -Ob -o $out -") || die "Cannot open file\n"; }
+elsif ( $out ne "-" ) { open(OUT,">$out") || die "Cannot open file\n"; }
+else { *OUT = *STDOUT; }
+
+my $hrs = ();
+my $nrs = 0;
+open(IN,$rslist) || die "Cannot open file\n";
+while(<IN>) {
+    my ($rs) = split;
+    $hrs{$rs} = 1;
+    ++$nrs;
+}
+close IN;
+
+my $urs = scalar keys %hrs;
+
+print STDERR "Successfully loaded $nrs rsIDs ($urs unique)\n";
+
+my $mrs = 0;
+
+if ( $region ) {
+    if ( $dbsnp =~ /\.vcf.gz/ ) { open(IN,"tabix -h $dbsnp $region|") || die "Cannot opne file $dbsnp at $region"; }
+    elsif ( $dbsnp =~ /\.bcf/ ) { open(IN,"$binbcftools view -h $dbsnp $region|") || die "Cannot open file $dbsnp at $region"; }
+    else { die "Cannot open $dbsnp at arbitrary region $region\n"; }
+}
+else {
+    if ( $dbsnp =~ /\.vcf.gz/ ) { open(IN,"zcat $dbsnp |") || die "Cannot opne file $dbsnp at $region"; }
+    elsif ( $dbsnp =~ /\.bcf/ ) { open(IN,"$binbcftools view -h $dbsnp |") || die "Cannot open file $dbsnp at $region"; }
+    else { open(IN,$dbsnp) || die "Cannot open file\n"; }
+}
+while(<IN>) {
+    if ( /^#/ ) {
+	print OUT $_;
+    }
+    else {
+	my ($chrom,$pos,$id) = split;
+	if ( ( $F[2] ne "." ) && ( defined($hrs{$F[2]}) ) ) {
+	    ++$mrs;
+	    print OUT $_;
+	}
+    }
+}
+close IN;
+close OUT;
+
+print STDERR "Successfully loaded $mrs/$nrs matching rsIDs\n";

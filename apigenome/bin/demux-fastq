@@ -1,0 +1,219 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+use wGetOptions qw(wpod2usage wGetOptions);    
+use hyunlib qw(makeMake forkExecWait zopen wopen);
+
+my $fq1 = "";
+my $fq2 = "";
+my $mapf = "";
+my $out = "";
+my $maxBarcodes = 5;
+my $minCount = 250;
+my $parity = "A";      ## parity nucleotide is A
+my $parityExtra = "T"; ## extra nucleotide after the parity nucleotide
+my $barcodeLength = 6;
+my $umiLength = 8;
+
+wGetOptions(
+    "-Demultiplex FASTQ files based on barcode information\n\nThis software performs demultiplexing of FASTQ files for DropSeq-like paired-ended data, where the first read containing barcode (as a concatenation of cell barcode, UMI, and parity nucleotides) and the second read containing the actual reads",
+    "--Key Options",
+    "fq1=s" => [\$fq1, "FASTQ files for the first end, containing the barcode information"],
+    "fq2=s" => [\$fq2, "FASTQ files for the second end"],
+    "mapf=s" => [\$mapf, "Mapping file containing (1) BARCODE (2) ID"],
+    "out=s" => [\$out, "Output prefix"],
+    "max-barcodes=i" => [\$maxBarcodes, "Maximum barcodes"],
+    "min-count=i" => [\$minCount, "Minimum count of barcode"],
+    "parity=s" => [\$parity, "Parity nucleotide appearing right after the barcode sequences"],
+    "parity-extra=s" => [\$parityExtra, "Extra nucleotides (repeated) beyond the parity nucleotide"],
+    "barcode-length=i" => [\$barcodeLength, "Length of barcode (read 2), including parity reads"],
+    "umi-length=i" => [\$umiLength, "Length of UMI for molecular indexing"],            
+    ) || wpod2usage(2);
+
+if ( !$fq1 || !$fq2 || !$out ) {
+    print STDERR "Missing required options : --fq1, --fq2, --out --mapf\n";
+    wpod2usage();
+}
+
+
+my $fh1 = &zopen($fq1);
+my $fh2 = &zopen($fq2);
+
+my ($ibarcode,$iid);
+my @barcodes = ();
+my @ids = ();
+
+if ( $mapf ) {
+    open(MAP, $mapf) || die "Cannot open file $mapf\n";
+    while(<MAP>) {
+	if ( $. == 1 ) {
+	    s/^#//g;
+	    my @F = split;
+	    for(my $i=0; $i < @F; ++$i) {
+		my $str = uc($F[$i]);
+		if ( $str eq "BARCODE" ) {
+		    die "Multiple BARCODE columns in $mapf\n" if ( defined($ibarcode) );
+		    $ibarcode = $i;
+		}
+		elsif ( $str eq "ID" ) {
+		    die "Multiple ID columns in $mapf\n" if ( defined($iid) );		
+		    $iid = $i;
+		}
+	    }
+	    
+	    die "Either BARCODE or ID column is missing in $mapf\n" unless ( defined($ibarcode) && defined($iid) );
+	}
+	else {
+	    my @F = split;
+	    push(@barcodes,$F[$ibarcode]);
+	    push(@ids,$F[$iid]);
+	    
+	    print STDERR "Loaded BARCODE $F[$ibarcode] for ID $F[$iid]\n";
+	}
+    }
+    close MAP;
+}
+else {
+    print STDERR "Attemping to automatically detect barcode\n";
+    open(IN,"zcat $fq2 | head -100000 | awk 'NR % 4 ==2' | sort | uniq -c | sort -n -r|") || die "Cannot open file\n";
+    while(<IN>) {
+	my ($count,$barcode) = split;
+	my $parityBase = substr($barcode,$barcodeLength,1);
+	last if ( ( $parityBase ne $parity ) && ( $parityBase ne "N" ) );
+	last if ( $. > $maxBarcodes );
+	last if ( $count < $minCount );
+       
+	push(@barcodes,substr($barcode,0,$barcodeLength));
+	push(@ids,substr($barcode,0,$barcodeLength));
+
+	print STDERR "Loaded BARCODE $barcode with count $count\n";	
+    }
+    close IN;
+    my $cmd = "zcat $fq2 | head -10000 | awk 'NR % 4 ==2' | sort | uniq -c | sort -n -r|";
+    die "Cannot identify $maxBarcodes BARCODES from $fq2. Probably failed in the command '$cmd'?\n" if ( $#barcodes != $maxBarcodes-1);
+}
+
+## now construct all possible insertion, deletion, and mismatches of the barcodes
+my %iBC = ();
+for(my $i=0; $i < @barcodes; ++$i) {
+    ## no mistmatch
+    my $noerr = "$barcodes[$i]$parity";
+    my $withN = "$barcodes[$i]"."N";    
+	
+    addKey($noerr,$i);
+    addKey($withN,$i);
+    my $l = length($noerr);
+    my @acgt = qw(A C G T N);
+
+    ## substitutions
+    for(my $j=0; $j < $l; ++$j) {
+	my $copied = $noerr;
+	for(my $k=0; $k < @acgt; ++$k) {
+	    substr($copied,$j,1) = $acgt[$k];
+	    addKey($copied,$i + $#barcodes + 1);
+	}
+	$copied = $withN;
+	for(my $k=0; $k < @acgt; ++$k) {
+	    substr($copied,$j,1) = $acgt[$k];
+	    addKey($copied,$i + $#barcodes + 1);
+	}	
+    }
+
+    # ## insertions
+    # for(my $j=0; $j < $l-1; ++$j) {
+    # 	my $copied = substr($noerr,0,$j).$parity.substr($noerr,$j,$l-$j-1);
+    # 	for(my $k=0; $k < 4; ++$k) {
+    # 	    substr($copied,$j,1) = $acgt[$k];
+    # 	    #addKey($copied,$i + $#barcodes + 1);
+    # 	}
+    # }
+
+    # ## deletions
+    # for(my $j=0; $j < $l; ++$j) {
+    # 	my $copied = substr($noerr,0,$j).substr($noerr,$j+1,$l-$j-1).$parityExtra;
+    # 	#addKey($copied,$i + $#barcodes + 1);
+    # }
+}
+
+print STDERR "Finished contructing the barcode match table\n";
+
+my @ofs = ();
+for(my $i=0; $i < @ids; ++$i) {
+    push(@ofs,wopen("$out.$ids[$i].fastq.gz"));
+}
+push(@ofs,wopen("$out.mismatches.fastq.gz"));
+
+## now just count the number of matches and mismatches..
+my @fq = ();
+my @cnts = (0) x (2 * ($#barcodes+1));
+my %nMisses = ();
+my $totmiss = 0;
+my $totread = 0;
+for( my $i=0; &readFQ($fh1,$fh2,\@fq) > 0; ++$i ) {
+    print STDERR "Processing $i FASTQ records...\n" if ( $i % 500000 == 0 );
+    $fq[2] = substr($fq[2],0,$barcodeLength+1);
+    if ( defined($iBC{$fq[2]}) ) {
+	my $idx = $iBC{$fq[2]};
+	++$cnts[$idx];
+	$idx = $idx % ($#barcodes+1);
+	print {$ofs[$idx]} "$fq[0]:".substr($fq[1],0,$umiLength)."\n".substr($fq[1],$umiLength)."\n+\n".substr($fq[3],$umiLength)."\n";
+    }
+    else {
+	$nMisses{$fq[2]} = 0 unless ( defined($nMisses{$fq[2]}) );
+	++$nMisses{$fq[2]};
+	++$totmiss;
+	print {$ofs[$#ofs]} "$fq[0]:".substr($fq[1],0,$umiLength)."\n".substr($fq[1],$umiLength)."\n+\n".substr($fq[3],$umiLength)."\n";	
+    }
+    ++$totread;
+}
+
+$fh1->close();
+$fh2->close();
+for(my $i=0; $i < @ofs; ++$i) {
+    $ofs[$i]->close();
+}
+
+print join("\t","TOTAL_READ",$totread,0)."\n";
+for(my $i=0; $i < $#barcodes+1; ++$i) {
+    print join("\t","MATCH",$barcodes[$i],$cnts[$i],$cnts[$i+$#barcodes+1])."\n";
+}
+print join("\t","TOTAL_MISS",$totmiss,0)."\n";
+#foreach my $key (sort {$nMisses{$b} <=> $nMisses{$a}} keys %nMisses) {
+#    print join("\t","MISS",$key,$nMisses{$key},0)."\n";
+#}
+
+sub addKey {
+    my ($key,$idx) = @_;
+    if ( defined($iBC{$key}) ) {
+	if ( $iBC{$key} % ($#barcodes + 1) != ( $idx % ($#barcodes + 1)  ) ) {
+	    die "Conflicting barcode $key is already befined for index $idx - ".$iBC{$key}."\n";
+	}
+    }
+    else {
+	$iBC{$key} = $idx;
+    }
+}
+
+sub readFQ {
+    my ($fh1,$fh2,$ref) = @_;
+    my $line1 = $fh1->getline();
+    return 0 unless ( defined($line1) );
+    ($line1) = split(/[\s\/]/,$line1);
+    ($ref->[0]) = split(/[\s\/]/,$fh2->getline());
+    die "$line1 != ".($ref->[0])."\n" if ( $line1 ne $ref->[0] );
+    $ref->[1] = $fh1->getline();
+    $ref->[2] = $fh2->getline();
+    my $dummy = $fh1->getline();
+    my $dummy2 = $fh2->getline();
+    $ref->[3] = $fh1->getline();
+    $ref->[4] = $fh2->getline();
+
+    chomp($ref->[1]);
+    chomp($ref->[2]);
+    chomp($ref->[3]);
+    chomp($ref->[4]);    
+    
+    return 1;
+}

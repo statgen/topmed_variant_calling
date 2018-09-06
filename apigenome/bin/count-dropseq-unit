@@ -1,0 +1,78 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+use wGetOptions qw(wpod2usage wGetOptions);    
+use hyunlib qw(makeMake forkExecWait zopen wopen loadGTF);
+
+my $bam = "";
+my $out = "";
+my $samtools = "samtools";
+my $genef = "";
+my $minMQ = 20;
+my $bclen = 12;
+my $bcmap = "";
+
+wGetOptions(
+    "-Count digital expressions from DropSeq BAMs",
+    "--Key Options",
+    "genef=s" => [\$genef, "Gene file"],
+    "bam=s" => [\$bam, "BAM file"],
+    "out=s" => [\$out, "Output file prefix"],
+    "--Additional Options",
+    "samtools=s" => [\$samtools, "Path to the binary of samtools"],
+    "min-mq=i" => [\$minMQ, "Minimum mapping quality"],
+    "barcode-length=i" => [\$bclen, "Barcode length to trim to"],
+    "barcode-map=s" => [\$bcmap, "Barcode map file"],        
+    ) || wpod2usage(2);
+
+if ( !$bam || !$out || !$genef) {
+    print STDERR "Missing required options : --bam --out, --genef\n";
+    wpod2usage();
+}
+
+my %hbc = ();
+if ( $bcmap ) {
+    open(IN,$bcmap) || die "Cannot open file\n";
+    while(<IN>) {
+	my ($bcd,$reduced) = split;
+	$hbc{$bcd} = $reduced;
+    }
+    close IN;
+}
+
+
+open(GENE,$genef) || die "Cannot open file\n";
+open(OUT,">$out") || die "Cannot open file $out\n";
+while(<GENE>) {
+    my ($name,$tid,$chr,$beg,$end,@exons) = split;
+    my %h = ();
+    open(IN,"$samtools view -q $minMQ $bam @exons | cut -f 1 |") || die "Cannot open file\n";
+    while(<IN>) {
+	chomp;
+	my @F = split(/:/);
+	my $bcd = $F[$#F-1];
+	$bcd = substr($bcd,0,$bclen);
+	$bcd = $hbc{$bcd} if ( ( $bcmap ) && ( defined($hbc{$bcd}) ) );	
+	my $umi = $F[$#F];
+	$h{$bcd} = {} unless ( defined($h{$bcd}) );
+	$h{$bcd}->{$umi} = 0 unless ( defined($h{$bcd}->{$umi}) );
+	++($h{$bcd}->{$umi});
+    }
+    close IN;
+
+    print OUT join("\t",$name,$tid,$chr,$beg,$end);    
+    foreach my $bcd (sort keys %h) {
+	my ($ucnt,$dcnt) = (0,0);
+	my $r = $h{$bcd};
+	foreach my $umi (keys %{$r}) {
+	    ++$ucnt;
+	    $dcnt += $r->{$umi};
+	}
+	print OUT "\t".join(":",$bcd,$ucnt,$dcnt);
+    }
+    print OUT "\n";
+}
+close OUT;
+close GENE;

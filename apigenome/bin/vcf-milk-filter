@@ -1,0 +1,580 @@
+#!/usr/bin/perl -w
+
+use strict;
+use POSIX qw(pow log10 sqrt);
+use FindBin;
+use lib $FindBin::Bin;
+use wGetOptions qw(wpod2usage wGetOptions);
+use Time::HiRes;
+
+## vcf-milk-filter
+## Mendelian Inheritance and LiKelihoo-based variant Filtering rom VCF and PED
+##
+## Input file needed
+## 1) VCF file with GL or PL field, where some samples are related to each other
+## 2) PED file containing the individuals in the VCF file.
+##    The PED file can contain additional individual IDs who does not appear in the VCF
+##    If any family is not a nuclear family, or an individual belongs to multiple nuclear families it will report errors
+## 3) Duplicate individuals can be specified in a comma-separated strings in the Individual ID column
+
+my $vcf = "";
+my $out = "";
+my $ped = "";
+my $gtField = "GT";
+my $plField = "PL";
+my $scaleGL = "";
+my $fixAF = "";
+my @exfamids = ();
+my $region = "";
+my $bcftools = "bcftools"; #"/usr/cluster/bin/bcftools";
+my $tabix = "$FindBin::Bin/tabix"; # "/usr/cluster/bin/tabix";
+my $bgzip = "$FindBin::Bin/bgzip"; #"/usr/cluster/bin/bgzip";
+
+wGetOptions(
+    "-Family-based variant quality evaluation",
+    "--Required Options",
+    "ped=s" => [\$ped, "Pedigree file", "Pedigree file in PED format with parents and sex information available. MZ Twins or duplicated samples must be located in the same row, with those individual IDs separated by commas"],
+    "vcf=s" => [\$vcf, "Input VCF file", "Input VCF file with GL and PL information available"],
+    "out=s" => [\$out, "Output file", "Output VCF file annotating each site and family with Bayes Factors"],
+    "--Additional Options",
+    "fix-af=f" => [\$fixAF, "Fix allele frequency", "Fix allele frequency to certain value"],
+    "exclude-fam=s" => [\@exfamids,"Exclude a particular family ID"],
+    "region=s" => [\$region,"Genomic region to focus on"],
+    "tabix=s" => [\$tabix,"Path to the tabix software binary"],
+    "bgzip=s" => [\$bgzip,"Path to the bgzip software binary"],    
+    "bcftools=s" => [\$bcftools,"Path to the bcftools software binary"],
+    "gt-field=s" => [\$gtField,"Name of GT field containing genotype information"],
+    "pl-field=s" => [\$plField,"Name of GL or PL field containing genotype likelihood information"],
+    "scale-gl" => [\$scaleGL,"Use GL scale rather than PL scale. If GL is used instead of PL, you need to turn this option on"],
+    ) || wpod2usage(2);
+
+unless ( ( $vcf ) && ( $out ) && ( $ped ) ) {
+    print STDERR "ERROR: Missing required option\n";
+    wpod2usage(2);
+}
+
+print STDERR "Analysis started at ".scalar(localtime)."\n";
+
+## Building a dictionary of family IDs to exclude from the analysis
+my %hexfamids = ();
+foreach my $fid (@exfamids) {
+    $hexfamids{$fid} = 1;
+}
+
+## Build PL to error array
+my $logten = log(10);
+my @PL2e = ();
+for(my $i=0; $i < 256; ++$i) {
+    push(@PL2e,pow(0.1,$i/10));
+}
+for(my $i=256; $i < 100000; ++$i) {
+    push(@PL2e,$PL2e[255]);
+}
+
+## First, scan the VCF to know which samples are sequenced
+## hvcfids contains the list of IDs sequenced
+if ( $vcf =~ /\.vcf.gz$/ ) {
+    die "Cannot open $vcf\n" unless ( -s $vcf );
+    if ( $region ) {
+	open(IN,"$tabix -h $vcf $region |");
+    }
+    else {
+	open(IN,"zcat $vcf |");	
+    }
+}
+elsif ( $vcf =~ /\.bcf$/ ) {
+    print STDERR "Reading BCF file using BCFtools\n";
+    die "Cannot open $vcf\n" unless ( -s $vcf );
+    if ( $region ) {
+	open(IN,"$bcftools view $vcf $region |");
+    }
+    else {
+	open(IN,"$bcftools view $vcf |");	
+    }    
+}
+else {
+    open(IN,$vcf) || die "Cannot open $vcf\n";
+}
+my %hvcfids = ();
+while(<IN>) {
+    next if ( /^##/ );
+    if ( /^#CHROM/ ) {
+	my @F = split(/[ \t\r\n]+/);
+	for(my $i=9; $i < @F; ++$i) {
+	    $hvcfids{$F[$i]} = 1;
+	}
+	last;
+    }
+    die unless ( /^#/ );
+}
+close IN;
+
+## Second, place the sample 
+my %hfams = ();
+my %hids = ();
+my @ids = ();
+
+## First, build family graph
+open(IN,$ped) || die "Cannot open file\n";
+while(<IN>) {
+    next if ( /^#/ );
+    my ($fid,$miid,$dad,$mom,$sex,$pheno) = split;
+
+    next if ( defined($hexfamids{$fid}) );
+
+    $dad = 0 unless ( defined($hvcfids{$dad}) );
+    $mom = 0 unless ( defined($hvcfids{$mom}) );   
+
+    ## if the individual is duplicated,
+    my @tmpiids = split(/,/,$miid);
+    my @iids = ();
+    for(my $i=0; $i < @tmpiids; ++$i) {
+	push(@iids,$tmpiids[$i]) if ( defined($hvcfids{$tmpiids[$i]}) );
+    }
+
+    ## create family
+    $hfams{$fid} = [[], []] unless ( defined($hfams{$fid}) );
+    my $r = $hfams{$fid};
+    if ( ( $dad eq "0" ) && ( $mom eq "0" ) ) {  ## founders
+	if ( $sex eq "1" ) {  ## DAD
+	    if ( $#{$r->[0]} < 0 ) {
+		$r->[0] = \@iids;
+	    }
+	    else {
+		die "Multiple fathers in family $fid. This is not allowed in current model\n";
+	    }
+	}
+	elsif ( $sex eq "2" ) { ## MOM
+	    if ( $#{$r->[1]} < 0 ) {
+		$r->[1] = \@iids;
+	    }
+	    else {
+		die "Multiple fathers in family $fid. This is not allowed in current model\n";
+	    }
+	}
+	else {
+	    die "Founders must have sex information available, but $miid does not\n";
+	}
+    }
+    else { ## OFFSPRING
+	push(@{$hfams{$fid}},\@iids);
+    }
+
+    ## put individuals in dictionary
+    foreach my $iid (@iids) {
+	push(@ids,$iid);
+	$hids{$iid} = $#ids;
+    }
+}
+close IN;
+
+## sanith check for each family
+foreach my $fid (keys %hfams) {
+    my $r = $hfams{$fid};
+    if ( $#{$r->[0]} < 0 ) {
+	if ( $#{$r->[1]} < 0 ) {
+	    warn "No parent is available for family $fid\n";
+	}
+    }
+
+    foreach my $rind (@{$r}) {
+	foreach my $id (@{$rind}) {
+	    die "Individual $id is missing in the PED file\n" unless ( defined($hids{$id}) );
+	}
+    }
+}
+
+if ( $vcf =~ /\.vcf.gz$/ ) {
+    die "Cannot open $vcf\n" unless ( -s $vcf );
+    if ( $region ) {
+	open(IN,"$tabix -h $vcf $region |");
+    }
+    else {
+	open(IN,"zcat $vcf |");	
+    }
+}
+elsif ( $vcf =~ /\.bcf$/ ) {
+    print STDERR "Reading BCF file using BCFtools\n";
+    die "Cannot open $vcf\n" unless ( -s $vcf );
+    if ( $region ) {
+	open(IN,"$bcftools view $vcf $region |");
+    }
+    else {
+	open(IN,"$bcftools view $vcf |");	
+    }    
+}
+else {
+    open(IN,$vcf) || die "Cannot open $vcf\n";
+}
+
+if ( $out =~ /\.gz$/ ) {
+    open(OUT,"| $bgzip -c > $out") || die "Cannot open file\n";
+}
+else {
+    open(OUT,">$out") || die "Cannot open file\n";
+}
+
+## Write each family info
+foreach my $fid (sort keys %hfams) {
+    print OUT "##FID=$fid";
+    foreach my $rind (@{$hfams{$fid}}) {
+	print OUT "\t[ ".join(" , ",@{$rind})." ] ";
+	#die "The maximum offspring per family is 4\n" if ( $#{$rind} > 3 );
+    }
+    print OUT "\n";
+}
+
+print OUT join("\t","#CHROM","POS","ID","REF","ALT","QUAL","FILTER","INFO","FORMAT");
+foreach my $fid (sort keys %hfams) {
+    print OUT "\t$fid";
+}
+print OUT "\n";
+while(<IN>) {
+    print STDERR "Processing $. lines... at ".scalar(localtime)."\n" if ( $. % 1000 == 0 );
+    if ( /^#/ ) {
+	next if ( /^##/ );
+	## Reading individual IDs
+	my @F = split;
+	my %hI = ();
+	for(my $i=9; $i < @F; ++$i) {
+	    $hI{$F[$i]} = $i-9;
+	}
+
+	my $nfam = 0;
+	my $nind = 0;
+	my $nbam = 0;
+
+	foreach my $fid (sort keys %hfams) {
+	    foreach my $rind (@{$hfams{$fid}}) {
+		for(my $i=0; $i <= $#{$rind}; ++$i) {
+		    die "$rind->[$i]" unless ( defined($hI{$rind->[$i]}) );
+		    $rind->[$i] = $hI{$rind->[$i]};
+		    ++$nbam;
+		}
+		++$nind if ( $#{$rind} >= 0 );
+	    }
+	    ++$nfam;
+	}
+	print STDERR "Total Number of Families : $nfam\n";
+	print STDERR "Total Number of Individuals : $nind\n";
+	print STDERR "Total Number of Samples considered for MiLk-Filter: $nbam\n";
+    }
+    else {
+	print STDERR "Reading $. lines.." if ( $. % 1000 == 0 );
+
+	my @F = split(/[\t\r\n]/);
+	my @PLs = ();
+	my @GTs = ();
+	next if ( $F[4] =~ /,/ );
+	next if ( $F[4] eq "<VNTR>" );
+	my ($ac,$an) = (0,0);
+
+	## We need to know
+	## 1. index of GT fields
+	## 2. index of PL fields
+
+	next if ( $F[4] =~ ',' );  ## skip multiallelics;
+	my @fmts = split(/:/,$F[8]);
+	my $iGT = -1;
+	my $iPL = 1;
+	for(my $i=0; $i < @fmts; ++$i) {
+	    if ( $fmts[$i] eq $gtField ) {
+		$iGT = $i;
+	    }
+	    elsif ( $fmts[$i] eq $plField ) {
+		$iPL = $i;
+	    }
+	}
+	if ( ( $iGT < 0 ) || ( $iPL < 0 ) ) {
+	    print STDERR "WARNING: Cannot find GT or PL field from $F[8] at $F[0]:$F[1]:$F[3]:$F[4].. Skipping\n";
+	    next;
+	}
+
+	for(my $i=9; $i < @F; ++$i) {
+	    my @G = split(/:/,$F[$i]);
+	    my ($gt,$pl) = ($G[$iGT],$G[$iPL]);
+
+	    if ( $gt =~ /^\./ ) {
+		push(@GTs,0);
+	    }
+	    else {
+		my ($gt0,$gt1) = split(/[\/\|]/,$gt);
+		push(@GTs,($gt0 > 0 ? 1 : 0) + ($gt1 > 0 ? 1 : 0)+1);
+		$ac += ($GTs[$#GTs]-1);
+		$an += 2;
+	    }
+	    
+	    if ( ( !defined($pl) ) || ( $pl =~ /^\./ ) ) {
+		my @p = (0,0,0);
+		push(@PLs,\@p);
+	    }
+	    elsif ( $scaleGL ) {
+		my @gls = split(/,/,$pl);
+		my $maxGL = ( $gls[0] > $gls[1] ) ? ( $gls[0] > $gls[2] ? $gls[0] : $gls[2] ) : ( $gls[1] > $gls[2] ? $gls[1] : $gls[2] );
+		my @p = ();
+		push(@p, $gls[0]-$maxGL < -25.5 ? 255 : int(-10*($gls[0]-$maxGL)));
+		push(@p, $gls[1]-$maxGL < -25.5 ? 255 : int(-10*($gls[1]-$maxGL)));
+		push(@p, $gls[2]-$maxGL < -25.5 ? 255 : int(-10*($gls[2]-$maxGL)));
+		push(@PLs,\@p);
+	    }
+	    else {
+		my @p = split(/,/,$pl);
+		&normPLs(\@p);
+		push(@PLs,\@p);
+	    }
+	}
+
+	my $n = $#F+1-9;
+
+	my $acaf = ($ac + 0.5)/($an+1);  ## acaf is AC-based AF
+	my ($hweAF,@hwdGF) = ($fixAF) ? ($fixAF, (1-$fixAF)*(1-$fixAF), 2*$fixAF*(1-$fixAF), $fixAF * $fixAF) : &emAF($acaf,$n,\@PLs);  # EM AF estimates without using family structure
+
+	if ( $hweAF*$n < 0.5 ) { ## less than singletons - effectively monomorphic
+	    $hweAF = 0.5/$n;
+	    $hwdGF[1] = 0.5/$n;
+	    $hwdGF[0] = 1-0.5/$n;
+	    $hwdGF[2] = $hwdGF[1]*$hwdGF[1];
+	}
+	elsif ( $hweAF*$n > $n-0.5 ) {
+	    $hweAF = 1-0.5/$n;
+	    $hwdGF[1] = 0.5/$n;
+	    $hwdGF[0] = $hwdGF[1]*$hwdGF[1];
+	    $hwdGF[2] = 1-0.5/$n;
+	}
+	my $af = $hweAF;   ## hweAF is EM-based allele frequencies
+
+	## calculate the likelihood of data under HWE/HWD vs Related/Unrelated
+
+	## calculate the likelihood ignoring the relatedness / dups
+	#my $lU = 0;
+	#my $lD = 0;
+
+	my @hweGF = ( ( 1-$hweAF)*(1-$hweAF), 2*$hweAF*(1-$hweAF), $hweAF*$hweAF );
+	my @hwePairGF = (0) x 9;
+	my @hwdPairGF = (0) x 9;	
+	
+	for(my $i=0; $i < 3; ++$i) {
+	    for(my $j=0; $j < 3; ++$j) {
+		$hwePairGF[$i*3+$j] = ($hweGF[$i] * $hweGF[$j]);
+		$hwdPairGF[$i*3+$j] = ($hwdGF[$i] * $hwdGF[$j]);		
+	    }
+	}
+
+	## We want to estimate allele balance and inbreeding coefficient
+	#my $obsHet = 0;
+	#my ($ab0,$ab2) = (0.5,0.5);  ## pseudocount
+	
+	# foreach my $r (@PLs) {
+	#     my $hweSum = $pi[0] * $PL2e[$r->[0]] + $pi[1] * $PL2e[$r->[1]] + $pi[2] * $PL2e[$r->[2]];
+	#     my $hwdSum = $hwdGF[0] * $PL2e[$r->[0]] + $hwdGF[1] * $PL2e[$r->[1]] + $hwdGF[2] * $PL2e[$r->[2]];
+	#     $lU += log( $hweSum );
+	#     $lD += log( $hwdSum );
+	#     $obsHet += ( $pi[1] * $PL2e[$r->[1]] / $hweSum );
+	#     if ( ( $r->[1] < $r->[0] ) && ( $r->[1] < $r->[2] ) ) {
+	# 	$ab0 += ( $r->[0] - $r->[1] > 255 ? 255/30 : ($r->[0]-$r->[1])/30 );
+	# 	$ab2 += ( $r->[2] - $r->[1] > 255 ? 255/30 : ($r->[2]-$r->[1])/30 );
+	#     }
+	# }
+
+	# my $fic = 1-$obsHet/($#PLs+1)/(2*$hweAF*(1-$hweAF));
+	# my $ab = $ab0/($ab0+$ab2);
+	# my $fhet = $obsHet/($#PLs+1)/(($hweAF > 0.5 ? 2*(1-$hweAF) : 2*$hweAF));
+
+	my @pomf = ( [1, 0, 0], [.5, .5, 0], [0, 1, 0], [.5, .5, 0], [.25, .5, .25], [0, .5, .5], [0, 1, 0], [0, .5, .5], [0, 0, 1] );
+	my @lUEs = ();
+	my @lUDs = ();
+	my @lREs = ();
+	my @lRDs = ();
+	my @lGs = ();
+	my ($lUE, $lUD, $lRE, $lRD) = (0,0,0,0); 
+
+	## There is caveat of sample individual likelihood is multiple twice if they belong to multiple trios
+	foreach my $fid (sort keys %hfams) {  ## iterate over each family
+	    my @fPLs = ();  ## PL info for each family member
+	    my @fGTs = ();  ## best-guess genotypes for each family
+	    my @inds = @{$hfams{$fid}};  ## individual IDs for each family
+
+	    my ($flUE,$flUD,$flRE,$flRD) = (0,0,0,0);
+	    
+	    ## Calculate the per-family likelihood ignoring the relatedness/dups
+	    for(my $i=0; $i < @inds; ++$i) {
+		my $rind = $inds[$i];
+		for(my $k=0; $k <= $#{$rind}; ++$k) {
+		    my ($spUD, $spUE) = (0,0);	## sample-level posterior probability from AF and PL
+		    for(my $j=0; $j < 3; ++$j) {
+			my $e = $PL2e[$PLs[$rind->[$k]]->[$j]];
+			$spUD += ($e * $hwdGF[$j]);
+			$spUE += ($e * $hweGF[$j]);			
+		    }
+		    $flUD += (-10*log($spUD + 1e-100)/$logten);
+		    $flUE += (-10*log($spUE + 1e-100)/$logten);
+		}
+	    }	    
+
+	    ## merge PLs/GTs for dads if duplicate exists
+	    push(@fPLs, ( $#{$inds[0]} < 0 ) ? [ 0, 0, 0 ] : $PLs[$inds[0]->[0]] );
+	    push(@fGTs, ( $#{$inds[0]} < 0 ) ? 0 : $GTs[$inds[0]->[0]] );
+	    for(my $i=1; $i <= $#{$inds[0]}; ++$i) {   ## if there are multiple individuals, add them altogether
+		for(my $j=0; $j < 3; ++$j) {
+		    $fPLs[0]->[$j] += $PLs[$inds[0]->[$i]]->[$j];
+		}
+		$fGTs[0] .= $GTs[$inds[0]->[$i]];
+	    }
+
+	    ## merge PLs/GTs for moms if duplicate exists	    
+	    push(@fPLs, ( $#{$inds[1]} < 0 ) ? [ 0, 0, 0 ] : $PLs[$inds[1]->[0]] );
+	    push(@fGTs, ( $#{$inds[1]} < 0 ) ? 0 : $GTs[$inds[1]->[0]] );
+	    for(my $i=1; $i <= $#{$inds[1]}; ++$i) {
+		for(my $j=0; $j < 3; ++$j) {
+		    $fPLs[1]->[$j] += $PLs[$inds[1]->[$i]]->[$j];
+		}
+		$fGTs[1] .= $GTs[$inds[1]->[$i]];
+	    }
+
+	    ## merge PLs/GTs for kids if duplicate exists	    	    
+	    for(my $i=2; $i < @inds; ++$i) {
+		my $rind = $inds[$i];
+		push(@fPLs,$PLs[$rind->[0]]);
+		push(@fGTs,$GTs[$rind->[0]]);
+		for(my $k=1; $k <= $#{$rind}; ++$k) {
+		    for(my $j=0; $j < 3; ++$j) {
+			$fPLs[$i]->[$j] += $PLs[$rind->[$k]]->[$j];
+		    }
+		    $fGTs[$i] .= $GTs[$rind->[$k]];
+		}
+	    }
+	    
+	    my $nO = $#inds-1;
+	    my $nOG = pow(3,$nO);
+	    ## iterate over 3^{nO+2}
+
+	    my $fpRE = 0;
+	    my $fpRD = 0;
+	    my @OGs = ( 0 ) x $nO;  ## OG is all possible configurations of offspring genotypes
+	    
+	    
+	    ## Pr(o|m,f)
+	    ## 0 - 0 0 - 1   0   0
+	    ## 1 - 0 1 - 1/2 1/2 0
+	    ## 2 - 0 2 - 0   1   0
+	    ## 3 - 1 0 - 1/2 1/2 0
+	    ## 4 - 1 1 - 1/2 1/4 1/2
+	    ## 5 - 1 2 - 0   1/2 1/2
+	    ## 6 - 2 0 - 0   1   0
+	    ## 7 - 2 1 - 0   1/2 1/2
+	    ## 8 - 2 2 - 0   0   1
+	    my @oPLs = ();
+	    for(my $i=0; $i < $nOG; ++$i) {
+		my $oPL = 0;
+		for(my $j=0; $j < $nO; ++$j) {
+		    $OGs[$j] = int($i / pow(3,$j)) % 3;
+		    $oPL += $fPLs[2+$j]->[$OGs[$j]];
+		}
+		push(@oPLs,$oPL);  ## joint genotype likelihoods for all possible offspring configurations
+	    }
+
+	    for(my $j=0; $j < 9; ++$j) {
+		#my $p = $pj[$j] * $PL2e[$fPLs[0]->[int($j/3)]] * $PL2e[$fPLs[1]->[$j % 3]];
+		my $pE = $hwePairGF[$j] * $PL2e[$fPLs[0]->[int($j/3)]] * $PL2e[$fPLs[1]->[$j % 3]];
+		my $pD = $hwdPairGF[$j] * $PL2e[$fPLs[0]->[int($j/3)]] * $PL2e[$fPLs[1]->[$j % 3]];
+
+		for(my $k=0; $k < $nOG; ++$k) {
+		    my $pm = 1;
+		    for(my $l=0; $l < $nO; ++$l) {
+			$OGs[$l] = int($k / pow(3,$l)) % 3;
+			$pm *= $pomf[$j]->[$OGs[$l]];
+		    }
+		    $fpRE += ($pE * $pm * $PL2e[$oPLs[$k]]);
+		    $fpRD += ($pD * $pm * $PL2e[$oPLs[$k]]); 		    
+		}
+	    }
+	    $flRE = -10 * log($fpRE + 1e-100) / $logten;
+	    $flRD = -10 * log($fpRD + 1e-100) / $logten;	   
+
+	    push(@lUEs,$flUE);
+	    push(@lUDs,$flUD);
+	    push(@lREs,$flRE);
+	    push(@lRDs,$flRD);
+
+	    $lUE += $flUE;
+	    $lUD += $flUD;
+	    $lRE += $flRE;
+	    $lRD += $flRD;
+	    push(@lGs,join(",",@fGTs));
+	}	
+
+	print OUT join("\t",@F[0...6],$F[7]);
+	#unless ( $F[7] =~ /;FIC=/ ) {
+	#    printf OUT (";FIC=%.3lf",$fic);
+	#}
+	#printf OUT (";EMAF=%.6lf;HWDAF=%.6lg,%.6lg,%.6lg;FHET=%.3lf;LL0=%.3lf;LL1=%.3lf;LLD=%.3lf;LOG10BF=%.3lf;LOG10BD=%.3lf;LOG10BS=%.3lf",$hweAF,@hwdGF,$fhet,$lU,$lR,$lD,($lR-$lU)/log(10),($lD-$lU)/log(10), ($lR-$lD)/log(10));
+	printf OUT (";EMAF=%.6lf;HWDGF=%.6lg,%.6lg,%.6lg;LUE=%.2lf;LUD=%.2lf;LRE=%.2lf;LRD=%.2lf;BF_LRE_LUE=%.2lf;BF_LRE_LUD=%.2lf",$hweAF,@hwdGF,$lUE,$lUD,$lRE,$lRD,($lUE-$lRE),($lUE-$lRD));
+	print OUT "\tBF:LRE:LRD:LUE:LUD:GT";
+	for(my $j=0; $j < @lGs; ++$j) {
+	    printf OUT ("\t%.3lf:%.3lf:%.3lf:%.3lf:%.3lf:%s",$lUEs[$j]-$lRDs[$j],$lREs[$j],$lRDs[$j],$lUEs[$j],$lUDs[$j],$lGs[$j]);
+	}
+	print OUT "\n";
+    }
+}
+close IN;
+close OUT;
+
+sub emAF {
+    my ($af,$n,$rPLs) = @_;
+    #print "AF0 = $af, ";
+    my $iter = 0;
+    my $af0 = 0;
+    my @gf0s = (1, 0, 0);
+    my @gfs = ((1-$af)*(1-$af), 2 * $af * (1-$af), $af * $af);
+    #print "iter = 0, af = $af, ac = $ac, an = $an\n";
+    #for( $iter = 0; ((abs($af0 - $af) > 1e-6 ) || ( $iter == 0 )) && ( $iter < 100 ); ++$iter ) {
+    for( $iter = 0; ( $iter == 0 ) || ( &sumPairSS($af0,$af,$gf0s[1],$gfs[1],$gf0s[2],$gfs[2]) > 1e-4 ) && ( $iter < 100 ); ++$iter) {
+	my $ac = 0;
+	my @pis = ( (1-$af) * (1-$af), 2 * $af * (1-$af), $af * $af );
+	@gf0s = @gfs;
+
+	for(my $i=0; $i < $n; ++$i) {
+	    my $gp0 = $PL2e[$rPLs->[$i]->[0]] * $pis[0];
+	    my $gp1 = $PL2e[$rPLs->[$i]->[1]] * $pis[1];
+	    my $gp2 = $PL2e[$rPLs->[$i]->[2]] * $pis[2];
+	    $ac += ( ( $gp1 + 2 * $gp2 + 1e-30) / ( $gp0 + $gp1 + $gp2 + 1e-30) );
+
+	    $gp0 = $PL2e[$rPLs->[$i]->[0]] * $gfs[0];
+	    $gp1 = $PL2e[$rPLs->[$i]->[1]] * $gfs[1];
+	    $gp2 = $PL2e[$rPLs->[$i]->[2]] * $gfs[2];
+	    my $gpsum = $gp0 + $gp1 + $gp2 + 3e-30;
+
+	    $gfs[0] += ($gp0+1e-30)/$gpsum;
+	    $gfs[1] += ($gp1+1e-30)/$gpsum;
+	    $gfs[2] += ($gp2+1e-30)/$gpsum;
+	}
+	$af0 = $af;
+	for(my $i=0; $i < 3; ++$i) {
+	    $gfs[$i] = ($gfs[$i] + 1e-10) / ( $n + 3e-10 );
+	}
+	$af = ( $ac + 1e-6 ) / ( (2*$n) + 2e-6 );
+    }
+    #print "iter = $iter, af = $af, gfs = @gfs\n";
+    return ($af,@gfs);
+}
+
+sub sumPairSS {
+    my $sum = 0;
+    for(my $i=0; $i < @_; $i += 2) {
+	$sum += ( ( $_[$i] - $_[$i+1] ) * ( $_[$i] - $_[$i+1] ) );
+    }
+    return &sqrt($sum);
+}
+
+sub normPLs {
+    my $r = shift;
+    my $n = ($#{$r}+1);
+    my $maxPL = 255;
+    for(my $i=0; $i < $n; ++$i) {
+	$maxPL = $r->[$i] if ( $maxPL > $r->[$i] );
+    }
+    for(my $i=0; $i < $n; ++$i) {
+	$r->[$i] -= $maxPL;
+	$r->[$i] = 255 if ( $r->[$i] > 255 );
+    }
+}

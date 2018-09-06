@@ -1,0 +1,140 @@
+#!/usr/bin/perl -w
+
+use strict;
+use POSIX qw(pow log10 sqrt);
+use FindBin;
+use lib $FindBin::Bin;
+#use lib '/net/fantasia/home/hmkang/bin/utils';
+use wGetOptions qw(wpod2usage wGetOptions);
+use hyunlib qw(zopen);
+
+my $vcf = "";
+my $out = "";
+my $region = "";
+my $auto = "";
+
+## This generate the following tables.
+## INDEL MULTI DBSNP 1000G CODING NONSYNONYMPUS LoF #REFs #HETs #ALTs HETs/ALTs Ts/Tv
+
+wGetOptions(
+    "-Summary of INDEL/SNP VCF produced by Illumina's iSSAC pipeline",
+    "--Required Options",
+    "vcf=s" => [\$vcf, "Input VCF file", "Input VCF file produced by iSSAC"],
+    "out=s" => [\$out, "Output file", "Output VCF file prefix"],
+    "--Additional Options",
+    "region=s" => [\$region, "Focus on a specific region of genome in [chr]:[beg]-[end] format"],
+    "autosomes" => [\$auto,"Focus only on autosomal chromosomes"],
+    ) || wpod2usage(2);
+
+unless ( ( $vcf ) && ( $out ) ) {
+    print STDERR "ERROR: Missing required option\n";
+    wpod2usage(2);
+}
+
+my $fh = zopen($vcf,$region);  ## zopen() handles both compressed and uncompressed files, and opens specific regions for files compressed/indexed with bgzip/tabix if region is provided.  
+my %h = (); 
+
+while(<$fh>) {
+    next if ( /^#/ );
+    my ($chr,$pos,$id,$ref,$alt,$qual,$filt,$info,$format,$geno) = split;
+    next if ( ( $auto ) && ( $chr =~ /[MXY]$/ ) );   ## If the user set --autosomes option, they want to consider only autosomal chromosomes, so if --autosomes are set, ignore chrX, chrY, chrM, or (X, Y, MT) 
+    
+    my $multi = 0;
+    my $indel = 0;
+    if ( $alt =~ /,/ ) {  ## multi-allelic variants
+	$multi = 1;
+	my @alts = split(/,/,$alt);
+	$indel = 1 if ( length($ref) > 1 );    ## if any of the length of allele is greater than 1, it is not a SNP. (indel means that it is not a SNP) 
+ 	foreach my $a (@alts) {
+	    $indel = 1 if ( length($a) > 1 );	    
+	}
+    }
+    else {  ## most command cases
+	$indel = 1 if ( ( length($ref) > 1  ) || ( length($alt) > 1 )	 );
+    }
+    my $dbsnp = ( $info =~ /dbSNP138_ID=/ ) ? 1 : 0;
+    my $kg = ( $info =~ /1000G_phase1_release_v3_AF/ ) ? 1 : 0;
+    my $eff = $1 if ( $info =~ /EFF=([^\(]+)/ );
+    my $coding = 0;
+    my $nsyn = 0;
+    my $lof = 0;
+    my $ts = ( ( $indel == 0 ) &&  ( "$ref$alt" =~ /^(AG|GA|CT|TC)$/ ) ) ? 1 : 0;
+    my $tv = ( ( $indel == 0 ) &&  ( "$ref$alt" =~ /^(AC|AT|CA|CG|GC|GT|TA|TG)$/ ) ) ? 1 : 0;
+    if ( defined($eff) ) {
+	if ( $eff =~ /(frameshift_variant|start_lost|stop_gained|splice_acceptor_variant|splice_donor_variant)/ ) {
+	    $lof = 1;
+	    $nsyn = 1;
+	    $coding = 1;
+	}
+	elsif ( $eff =~ /(disruptive_inframe|inframe|initiator_codon_variant|missense_variant|stop_lost)/ ) {
+	    $nsyn = 1;
+	    $coding = 1;
+	}
+	elsif ($eff =~ /synonymous_variant/) {
+	    $coding = 1;
+	}
+    }
+
+ 
+    my ($g1,$sep,$g2) = split(//,$geno);
+
+    my $g = ($sep eq ":") ? ( ($g1 == 0) ? 0 : 2 ) : ( ( ($g1 == 0) ? 0 : 1 ) + ( ($g2 == 0) ? 0 : 1 ) );
+
+    my $key = join("",$indel,$multi,$dbsnp,$kg,$coding,$nsyn,$lof);
+    $h{$key} = [0,0,0,0,0] unless ( defined($h{$key}) );   ## $h{$key} contains a REFERENCE to an array containing [#REFs,#HETs,#HOMALTs,#Ts,#Tv] 
+    ++($h{$key}->[$g]);
+    ++($h{$key}->[3]) if ( $ts == 1 );
+    ++($h{$key}->[4]) if ( $tv == 1 );    
+}
+
+open(OUT,">$out") || die "Cannot open file\n";
+my @hdrs = qw(KEY INDEL MULTI DBSNP 1000G CODING NONSYNONYMPUS LoF REFs HETs ALTs HETHOM TsTv);
+print OUT join("\t",@hdrs)."\n";
+my @k = (0,0,0,0,0,0,0);
+for(my $i=0; $i < 2187; ++$i) {  # 2187 = 3^7
+    for(my $j=0; $j < 7; ++$j) {
+	$k[$j] = int($i/pow(3,$j)) % 3; ## converting the number into 7 digits (0-2) numbers
+    }
+    my @val0 = &calcKey(join("",@k));
+    my $sum = 0;
+    foreach my $v (@val0) {
+	$sum += $v;
+    }
+    if ( $sum > 0 ) {
+	print OUT join("\t",join("",@k),@k,@val0[0..2],sprintf("%.3lf",($val0[1]+0.5)/($val0[2]+1)),sprintf("%.3lf",($val0[3]+0.33)/($val0[4]+0.66)))."\n";
+    }
+}
+close OUT;
+
+sub calcKey {
+    my $key = $_[0];
+    my @keys = split(//,$key);
+    my $i = 0;
+    
+    for($i=0; $i < @keys; ++$i) {
+	last if ( $keys[$i] == 2 );
+    }
+    if ( $i > $#keys ) {  ## No 2s found
+	my @val0 = (0,0,0,0,0);
+	if ( defined($h{$key}) ) {
+	    @val0 = @{$h{$key}};
+	    #print OUT join("\t",$key,@keys,@val0[0..2],sprintf("%.3lf",($val0[1]+0.5)/($val0[2]+1)),sprintf("%.3lf",($val0[3]+0.33)/($val0[4]+0.66)))."\n";	
+	}
+	return @val0;
+    }
+    else { ## keys[$i] == 2
+        $keys[$i] = 0;
+	my $key0 = join("",@keys);
+	my @val0 = &calcKey($key0);
+        $keys[$i] = 1;
+	my $key1 = join("",@keys);	
+	my @val1 = &calcKey($key1);
+	for(my $i=0; $i < @val0; ++$i) {
+	    $val0[$i] += $val1[$i];
+	}
+	$h{$key} = \@val0;
+	$keys[$i] = 2;
+	#print OUT join("\t",$key,@keys,@val0[0..2],sprintf("%.3lf",($val0[1]+0.5)/($val0[2]+1)),sprintf("%.3lf",($val0[3]+0.33)/($val0[4]+0.66)))."\n";
+	return @val0;
+    }
+}

@@ -1,0 +1,113 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+use hyunlib qw(forkExecWait makeMake);
+use wGetOptions qw(wGetOptions wpod2usage);
+
+
+my $vcf = "";
+my $region = "";
+my $out = "";
+my $maxAC = 3;
+my $sepchr = "";
+
+wGetOptions(
+    "-Compute PCA loadings for large sequence data from eigenvectors and eigenvalues
+
+      Eigenvectors and eigenvalues can be calculated from the singular value decomposition (SVD)
+      G = UDV' where G is m * n matrix, U is m * k matrix, D is k*k matrix, and V is k*n matrix
+
+      For very large sequence data, computing D and V is possible using the following equations
+      G'G = VD'U'UDV' = VDV'
+      Because G'G can be computed in parallel, and the outcome is n * n, it is usually more tractable
+      than the full data, and D and V can be calculated (e.g. from EPACTS make-kin and pca-plot)
+
+      To calculate U, given D and V, one can calculate U using the following equations
+      U = GD^{-1}V'^{-1}
+
+      For any "
+    "-Examine the pattern of rare variant sharing",
+    "--Required Options",
+    "vcf=s",[\$vcf,"Input VCF file"],
+    "--Additional Options",
+    "region=s",[\$region,"Region to focus on"],
+    "out=s",[\$out,"Output file. STDOUT if unspecified"],
+    "maxAC=i",[\$maxAC,"Maxmium allele count threshold"],    
+    ) || wpod2usage(2);
+
+
+wpod2usage(2) unless ( $vcf );
+
+if ( $vcf =~ /\.gz$/ ) {
+    if ( $region ) {
+	open(VCF,"tabix -h $vcf $region|") || die "Cannot open file\n";
+    }
+    else {
+	open(VCF,"zcat $vcf|") || die "Cannot open file\n";
+    }
+}
+else { open(VCF,$vcf) || die "Cannot open file\n"; }
+
+my @H = ();
+my @nsings = ();
+my %hshare = ();
+
+while(<VCF>) {
+    if ( /^#/ ) {
+	if ( /^#CHROM/ ) {
+	    @H = split(/\s+/);
+	    @nsings = (0) x ($#H+1);
+	}
+    }
+    else {
+	my @F = split(/\s+/);
+	my $ac = $1 if ( $F[7] =~ /AC=(\d+);/ );
+	next unless ( defined($ac) );	
+	next if ( $F[6] ne "PASS" );
+	next if ( $ac > $maxAC );
+
+	print STDERR "Processing $F[0]:$F[1]:$F[3]:$F[4]:$ac\n" if ( $F[1] % 1000 == 0 );
+
+	if ( $ac == 1 ) {
+	    for(my $i=9; $i < @F; ++$i) {
+		if ( substr($F[$i],0,3) ne "0/0" ) {
+		    ++$nsings[$i];
+		    last;
+		}
+	    }
+	}
+	else {
+	    my $marker = join("_",$F[0],$F[1],$F[3],$F[4],$ac);
+	    my @nrefs = ();
+	    for(my $i=9; $i < @F; ++$i) {
+		if ( substr($F[$i],0,3) ne "0/0" ) {
+		    push(@nrefs,$i);
+		}		
+	    }
+	    for(my $i=1; $i < @nrefs; ++$i) {
+		for(my $j=0; $j < $i; ++$j) {
+		    my $key = "$H[$nrefs[$j]]:$H[$nrefs[$i]]";
+		    $hshare{$key} = [] unless ( defined($hshare{$key}) );
+		    push(@{$hshare{$key}},$marker);
+		}
+	    }
+	}
+    }
+}
+close VCF;
+
+if ( $out =~ /\.gz$/ ) { open(OUT,"| gzip -c > $out") || die "Cannot open file\n"; }
+elsif ( $out ) { open(OUT,">$out") || die "Cannot open file\n"; }
+else { *OUT = *STDOUT; }
+
+for(my $i=9; $i < @H; ++$i) {
+    print OUT join("\t","SING",$H[$i],$nsings[$i])."\n";
+}
+
+foreach my $key (sort keys %hshare) {
+    print OUT join("\t","SHARE",$key,$#{$hshare{$key}}+1,@{$hshare{$key}})."\n";    
+}
+
+close OUT;

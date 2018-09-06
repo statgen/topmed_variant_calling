@@ -1,0 +1,92 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use lib $FindBin::Bin;
+use hyunlib qw(forkExecWait initRef @achrs %hszchrs);
+use wGetOptions qw(wGetOptions wpod2usage);
+
+my $vcf = "";
+my $out = "";
+my $key = "";
+my $sepchr = "";
+my $keep = "";
+my $binbgzip = "bgzip";
+my $bintabix = "tabix";
+my $bcftools = "bcftools";
+my $binliftOver = "liftOver";
+my $chain = "";
+my $newref = "";
+
+wGetOptions(
+    "-LiftOver a VCF file",
+    "--Required Options",
+    "vcf=s",[\$vcf,"Input VCF file"],
+    "out=s",[\$out,"Output file. STDOUT if unspecified"],
+    "chain=s",[\$chain,"liftOver chain file"],
+    "liftover=s",[\$binliftOver,"Path to binary of liftOver tool (downloadable from UCSC)"],
+    "ref=s",[\$newref,"Path to the new reference FASTA file"],    
+    "bcftools=s",[\$bcftools,"Path to binary of bcftools"],    
+    ) || wpod2usage(2);
+
+
+wpod2usage(2) unless ( ( $vcf ) && ( $out ) && ( $chain ) && ( -s $binliftOver) && ( $newref ) ) ;
+
+&initRef($newref);
+
+if ( $vcf =~ /\.bcf$/ ) { open(VCF, "$bcftools view $vcf|") || die "Cannot open file\n"; }
+elsif ( $vcf =~ /\.gz$/ ) { open(VCF,"zcat $vcf|") || die "Cannot open file\n"; }
+else { open(VCF,$vcf) || die "Cannot open file\n"; }
+
+if ( $out =~ /\.vcf\.gz$/ ) { $out =~ s/\.vcf\.gz$//; }
+
+open(BED,">$out.old.bed") || die "Cannot write $out.old.bed";
+open(OUT,"| $binbgzip -c > $out.vcf.gz") || die "Cannot open file\n";
+
+my %h = ();
+my $chrPrefix = ( $achrs[0] =~ /^chr/ ) ? 1 : 0;
+while(<VCF>) {
+    if ( /^#/ ) {
+	next if ( /^##contig=/ );
+	print OUT $_;
+	if ( $. == 1 ) {
+	    for(my $i=0; $i < @achrs; ++$i) {
+		print OUT "##contig=<ID=$achrs[$i],length=".$hszchrs{$achrs[$i]}->[3].">\n";
+	    }
+	}
+	next;
+    }
+    my @F = split;
+    my $key = "$F[0]\_$F[1]\_$F[3]\_$F[4]";
+    unless ( $F[0] =~ /^chr/ ) {
+	$F[0] = "chr$F[0]";
+    }
+    $h{$key} = \@F;
+    print BED join("\t",$F[0],$F[1]-1,$F[1]+length($F[3])-1,$key)."\n";
+}
+
+close BED;
+
+&forkExecWait("$binliftOver $out.old.bed $chain $out.new.bed $out.unmapped.bed");
+
+foreach my $mychr (1..22,"X","Y","M") {
+    print "Writing chromosome chr$mychr..\n";
+    open(IN,"cat $out.new.bed | grep -w ^chr$mychr | sort -k 2,3n |") || die "Cannot open $out.new.bed";
+    while(<IN>) {
+	my ($chr,$beg,$end,$key) = split;
+	next unless ( $chr =~ /^chr(\d+|X|Y|M)$/ );
+	#if ( $chain =~ /ToHg19/ ) {
+	if ( $chrPrefix == 0 ) {
+	    $chr =~ s/^chr//;
+	}
+	my @F = @{$h{$key}};
+	$F[7] .= ";OLD_VARIANT=$key";
+	print OUT join("\t",$chr,$beg+1,@F[2..$#F])."\n";
+    }
+    close IN;
+}
+close OUT;
+
+my $cmd = "$bintabix -pvcf $out.vcf.gz";
+&forkExecWait($cmd);
+

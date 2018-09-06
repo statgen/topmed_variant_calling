@@ -1,0 +1,203 @@
+#!/usr/bin/perl -w
+
+use strict;
+use FindBin;
+use Time::HiRes;
+use lib $FindBin::Bin;
+use wGetOptions qw(wpod2usage wGetOptions);    
+use hyunlib qw(makeMake forkExecWait zopen wopen);
+
+my $fq1 = "";
+my $fq2 = "";
+my $out = "";
+my $cutadapt = "/net/fantasia/home/hmkang/tools/cutadapt-1.8.1/bin/cutadapt";
+my $samtools = "/usr/cluster/bin/samtools";
+my $kallisto = "/net/fantasia/home/hmkang/tools/kallisto/kallisto";
+my $index = "/net/1000g/hmkang/data/ref/GRCh37.GRCm38.75/GRCh37.GRCm38.75.cdna.all.idx";
+my $lenCellBarcode = 12;
+my $lenUMI = 8;
+my $Rscript = "Rscript";
+my $Qthres = 10;
+my $adapter = "AAGCAGTGGTATCAACGCAGAGTGAATGGG";
+my $minLength = 20;
+my $sampleID = int(rand(1000000));
+my $maxCell = 3000;
+
+wGetOptions(
+    "-Alignment pipeline for DropSeq data from raw FASTQ files\nFirst reads are assumed to be 12bp cell barcode, 8bp UMI, attached to the readname\n1. Tag cell and molecular barcode\n2. Trim 5' adapter sequences\n2. Trim 3' polA sequences\n3. Bowtie",
+    "--Key Options",
+    "fq1=s" => [\$fq1, "First end of input FASTQ file (expected length 20)"],
+    "fq2=s" => [\$fq2, "Second end of input FASTQ file (expected length 50)"],
+    "out=s" => [\$out, "Output file prefix"],
+    "--Additional Options",
+    "cutadapt=s" => [\$cutadapt, "Path to the binary of cutadapt software tool"],
+    "kallisto=s" => [\$kallisto, "Path to the binary of kallisto aligner"],
+    "samtools=s" => [\$samtools, "Path to the binary of samtools"],    
+    "Rscript=s" => [\$Rscript, "Path to the binary of Rscript"],        
+    "index=s" => [\$index, "Path to the kallisto index file"],
+    "adapter=s" => [\$adapter, "Adapter sequences to trmp at 5' prime end"],
+    "min-length=i" => [\$minLength, "Minimum length of reads to retain after trimming"],    
+    "length-cell-barcode=i" => [\$lenCellBarcode, "Length of cell barcode"],
+    "length-umi=i",[\$lenUMI, "Length of unique molecular index (UMI)"],
+    "max-cell=i",[\$maxCell, "Maximum number of cell counts for plotting"],    
+    "sample-id=s",[\$sampleID, "Sample ID"],    
+    "Qthres=i",[\$Qthres, "Threashold of base quality for representing the barcode as upper/lower cases"],    
+    ) || wpod2usage(2);
+
+if ( !$fq1 || !$fq2 || !$out ) {
+    print STDERR "Missing required options : --fq1, --fq2, --out\n";
+    wpod2usage();
+}
+
+print STDERR "Analysis started at ".scalar(localtime)."\n";
+
+my $fh1 = &zopen($fq1);
+my $fh2 = &zopen($fq2);
+my @fq = ();
+
+print STDERR "Performing alignment using kalisto...\n";
+open(OUT,"| $cutadapt -f fastq -g $adapter -a AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA -m $minLength /dev/stdin 2> $out.err_cutadapt | $kallisto quant -o $out -i $index --single -l 250 -s 100 --plaintext --pseudobam /dev/stdin 2> $out.err_kallisto | $samtools view -Sb -o $out.bam - > $out.log 2> $out.err_samtools") || die "Cannot open file\n";
+
+my %cntBarcodes = ();
+
+for( my $i=0; &readFQ($fh1,$fh2,\@fq) > 0; ++$i ) {
+    print STDERR "Processing $i FASTQ records at ".scalar(localtime)."\n" if ( $i % 500000 == 0 );
+
+    my @bases = split(//,$fq[1]);
+    my @quals = split(//,$fq[3]);
+
+    for(my $i=0; $i < @quals; ++$i) {
+	if ( ord($quals[$i]) < ord(' ') + $Qthres ) {  ## quality less than $Qthres
+	    $bases[$i] = lc($bases[$i]);
+	}
+    }
+
+    my $barcode = join("",@bases[0..($lenCellBarcode-1)]);
+    my $umi = join("",@bases[($lenCellBarcode)..($lenCellBarcode+$lenUMI-1)]);
+
+    my $ucBarcode = uc($barcode);
+    $cntBarcodes{$ucBarcode} = 0 unless ( defined($cntBarcodes{$ucBarcode}) );
+    ++$cntBarcodes{$ucBarcode};
+
+    print OUT "$fq[0]:$barcode:$umi\n$fq[2]\n+\n$fq[4]\n";
+    #last if ( $i == 100000 );
+}
+
+$fh1->close();
+$fh2->close();
+close OUT;
+
+print STDERR "Finished kallisto alignment at ".scalar(localtime)."\n";
+
+## Step 1b. Create the CDF of the barcode counts
+open(DAT,">$out.barcode.counts.dat") || die "Cannot open file\n";
+foreach my $barcode(keys %cntBarcodes) {
+    print DAT join("\t",$barcode,$cntBarcodes{$barcode})."\n";
+}
+close DAT;
+
+open(R,">$out.barcode.counts.R") || die "Cannot open file\n";
+print R "M <- read.table('$out.barcode.counts.dat',header=F)\n";
+print R "total <- sum(M[,2])\n";
+print R "fracSorted <- cumsum(sort(M[,2], decreasing=TRUE))/total\n";
+print R "pdf(file='$out.barcode.counts.pdf',width=8,height=6)\n";
+print R "plot(1:$maxCell,fracSorted[1:$maxCell],xlab='Number of cell barcodes',ylab='Fraction of reads')\n";
+print R "dev.off()\n";
+close R;
+
+&forkExecWait("$Rscript $out.barcode.counts.R");
+
+print STDERR "Finished collecting barcode distribution metrics at ".scalar(localtime)."\n";
+
+## Step 3. Digital counting of expressions
+## For now - let's building simple counting histograms : 
+## minimum, fractional, maximum
+
+my $prevName;
+my %tbcd = ();
+my @tbufs = ();
+my $unit = 1000000;
+open(IN,"$samtools view $out.bam |") || die "Cannot open file\n";
+while(<IN>) {
+    print STDERR "Processing $. BAM records at ".scalar(localtime)."\n" if ( $. % 500000  == 0 );
+    
+    my ($rname,$flag,$tname,$pos,$mq,$cigar,$rnext,$pnext,$tlen,$seq,$qual) = split;
+    
+    if ( ( defined($prevName) ) && ( $prevName ne $rname ) ) {
+	my @rnames = split(/:/,$prevName);
+	
+	my $bc = uc($rnames[$#rnames-1]);
+	my $umi = uc($rnames[$#rnames]);
+	
+	foreach my $t (@tbufs) {
+	    ++($tbcd{$bc}{$t}{$umi}); # += ($unit + 1/($#tbufs+1));
+	}
+	@tbufs = ($tname);
+    }
+    else {
+	push(@tbufs,$tname);
+    }
+    $prevName = $rname;
+}
+close IN;
+
+if ( defined($prevName) ) {
+    my @rnames = split(/:/,$prevName);    
+    my $bc = uc($rnames[$#rnames-1]);
+    my $umi = uc($rnames[$#rnames]);    
+    foreach my $t (@tbufs) {
+	++($tbcd{$bc}{$t}{$umi});
+    }
+}
+
+print STDERR "Finished reading BAM files at ".scalar(localtime)."\n";
+
+my @sbcds = sort { $cntBarcodes{$b} <=> $cntBarcodes{$a} } keys %cntBarcodes;
+
+print STDERR "Started writing digital expression at ".scalar(localtime)."\n";
+
+open(OUT,">$out.exprs") || die "Cannot open file\n";
+for(my $i=0; $i < $maxCell; ++$i) {
+    my $r = $tbcd{$sbcds[$i]};
+    unless ( defined($r) ) {    
+	warn "Cannot find $sbcds[$i]\n";
+	next;
+    }
+    print OUT "$sbcds[$i]";
+    foreach my $t (sort keys %{$r}) {
+	print OUT "\t$t:".(scalar keys %{$r->{$t}});
+    }
+    print OUT "\n";
+}
+close OUT;
+
+print STDERR "Finished writing digital expression at ".scalar(localtime)."\n";
+
+## read paired-end FASTQ file
+## Return array with five elements
+## 0. ReadName
+## 1. First Sequence
+## 2. Second sequence
+## 3. First Quality
+## 4. Second Quality
+sub readFQ {
+    my ($fh1,$fh2,$ref) = @_;
+    my $line1 = $fh1->getline();
+    return 0 unless ( defined($line1) );
+    ($line1) = split(/[\s\/]/,$line1);
+    ($ref->[0]) = split(/[\s\/]/,$fh2->getline());
+    die "$line1 != ".($ref->[0])."\n" if ( $line1 ne $ref->[0] );
+    $ref->[1] = $fh1->getline();
+    $ref->[2] = $fh2->getline();
+    my $dummy = $fh1->getline();
+    my $dummy2 = $fh2->getline();
+    $ref->[3] = $fh1->getline();
+    $ref->[4] = $fh2->getline();
+
+    chomp($ref->[1]);
+    chomp($ref->[2]);
+    chomp($ref->[3]);
+    chomp($ref->[4]);    
+    
+    return 1;
+}

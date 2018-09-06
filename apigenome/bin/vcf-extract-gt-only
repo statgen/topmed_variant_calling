@@ -1,0 +1,82 @@
+#!/usr/bin/perl -w
+
+use strict;
+use POSIX qw(pow log10 sqrt);
+use FindBin;
+use lib $FindBin::Bin;
+use wGetOptions qw(wpod2usage wGetOptions);
+use hyunlib qw(forkExecWait);
+use Time::HiRes;
+
+## vcf-extract-gt-only
+## Extract GT fields from a VCF file
+## It removes all other FORMAT field in the header
+##   and extract only GT field
+
+my $vcf = "";
+my $out = "";
+my $tabix = "$FindBin::Bin/tabix"; # "/usr/cluster/bin/tabix";
+my $bgzip = "$FindBin::Bin/bgzip"; #"/usr/cluster/bin/bgzip";
+
+wGetOptions(
+    "-Extract GT field from VCF file",
+    "--Required Options",
+    "vcf=s" => [\$vcf, "Input VCF file", "Input VCF file with GT information available"],
+    "out=s" => [\$out, "Output file", "Output VCF file with GT fields only"],
+    "--Additional Options",
+    "tabix=s" => [\$tabix,"Path to the tabix software binary"],
+    "bgzip=s" => [\$bgzip,"Path to the bgzip software binary"],    
+    ) || wpod2usage(2);
+
+unless ( ( $vcf ) && ( $out ) ) {
+    print STDERR "ERROR: Missing required option\n";
+    wpod2usage(2);
+}
+
+print STDERR "Analysis started at ".scalar(localtime)."\n";
+
+if ( $vcf =~ /\.vcf.gz$/ ) {
+    die "File $vcf is not accessible or empty\n" unless ( -s $vcf );
+    open(IN,"zcat $vcf|") || die "Cannot open file\n";
+}
+else {
+    open(IN,$vcf) || die "Cannot open $vcf\n";
+}
+
+if ( $out =~ /\.vcf.gz$/ ) {
+    open(OUT,"| $bgzip -c > $out") || die "Cannot open file $out for writing\n";
+}
+else {
+    open(OUT,">$out") || die "Cannot open file $out for writing\n";
+}
+
+while(<IN>) {    
+    if ( /^#/ ) {
+	if ( /^##FORMAT/ ) {
+	    if ( /^##FORMAT=<ID=GT,/ ) {
+		print OUT $_;  ## Suppress all FORMAT fields except for GT
+	    }
+	}
+	else {
+	    print OUT $_;
+	}
+    }
+    else {
+	my @F = split;
+	print STDERR "Processing $F[0]:$F[1]:$F[3]:$F[4] at ".scalar(localtime)."\n" if ( rand(10000) < 1 );
+	my @gts = ();
+	unless ( $F[8] =~ /^GT/ ) {
+	    die "The FORMAT field at $F[0]:$F[1]:$F[3]:$F[4] does not start with GT\n";
+	}
+	
+	for(my $i=9; $i < @F; ++$i) {
+	    my ($gt) = split(/:/,$F[$i]);
+	    push(@gts,$gt);
+	}
+	print OUT join("\t",@F[0..7],"GT",@gts)."\n";
+    }
+}
+close IN;
+close OUT;
+
+&forkExecWait("$tabix -pvcf $out");
