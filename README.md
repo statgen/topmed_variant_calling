@@ -8,8 +8,6 @@ This repository is intended to provide a copy of software tools used for produci
 
 This repository reflects specific versions of software tools that are under active development in the Center for Statistical Genetics (CSG). Most of the latest version of these software tools can be accessed through multiple repositories, such as http://github.com/atks/vt, http://github.com/hyunminkang/cramore, http://github.com/hyunminkang/apigenome, http://github.com/samtools/htslib, http://github.com/samtools/samtools, http://github.com/samtools/bcftools, and this repository is focused on a freeze of software tools that can reproduce a variant calls compatible to the latest TOPMed Freeze (Freeze 6 currently).
 
-![TOPMed Variant Calling Overview](topmed_variant_calling_overview.png)
-
 
 Outline of the variant calling procedure
 ----------------------------------------
@@ -24,7 +22,8 @@ Our ``GotCloud vt`` pipeline detects and genotype variants from a list of aligne
 4. **Variant filtering** : We use the inferred pedigree of related and duplicated samples to calculate the Mendlian consistency statistics using ``king``, ``vcf-infer-ped``, ``vt milk-filter``, and train variant classifier using Support Vector Machine (SVM) implemented in the ``libsvm`` software package and ``run-svm-filter`` software tool.
 
 
-Steps to install and perform variant calling
+![TOPMed Variant Calling Overview](topmed_variant_calling_overview.png)
+
 
 Steps to install and perform variant calling
 ---------------------------------------------
