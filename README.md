@@ -8,6 +8,8 @@ This repository is intended to provide a copy of software tools used for produci
 
 This repository reflects specific versions of software tools that are under active development in the Center for Statistical Genetics (CSG). Most of the latest version of these software tools can be accessed through multiple repositories, such as http://github.com/atks/vt, http://github.com/hyunminkang/cramore, http://github.com/hyunminkang/apigenome, http://github.com/samtools/htslib, http://github.com/samtools/samtools, http://github.com/samtools/bcftools, and this repository is focused on a freeze of software tools that can reproduce a variant calls compatible to the latest TOPMed Freeze (Freeze 6 currently).
 
+![TOPMed Variant Calling Overview](topmed_variant_calling_overview.png)
+
 
 Outline of the variant calling procedure
 ----------------------------------------
