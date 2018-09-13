@@ -16,6 +16,7 @@ Our ``GotCloud vt`` pipeline detects and genotype variants from a list of aligne
 
 Our ``GotCloud vt`` pipeline detects and genotype variants from a list of aligned sequence reads. Specifically, the pipeline consist of the following six key steps. Most of these procedure will be integrated into ``GotCloud`` software package later this year. 
 
+0. **Sample quality control** : For each sequenced genome (in BAM/CRAMs), the genetic ancestry, sequence contamination, and biological sex are inferred using ``cramore cram-verify-bam`` and ``cramore vcf-normalize-depth``. 
 1. **Variant detection** : For each sequenced genome (in BAM/CRAMs), candidate variants are detected by ``vt discover2`` software tools, separated by each chromosome. The candidate variants are normalized by ``vt normalize`` algorithm. 
 2. **Variant consolidation** : For each chromosome, the called variant sites are merged across the genomes, accounting for overlap of variants between genomes, using ``cramore vcf-merge-candidate-variants``, ``vt annotate_indels`` software tool.
 3. **Genotype and feature collection** : For each 100kb chunk of genome, the genotyping module implemented in ``cramore dense-genotypes`` collects individual genotypes and variant features across the merged sites by iterating each sequence genome focusing on the selected region.  
