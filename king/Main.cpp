@@ -1,6 +1,6 @@
 ////////////////////////////////////////////////////////////////////////
 // Main.cpp
-// (c) 2010-2018 Wei-Min Chen
+// (c) 2010-2019 Wei-Min Chen
 //
 // This file is distributed as part of the KING source code package
 // and may not be redistributed in any form, without prior written
@@ -12,9 +12,9 @@
 //
 // All computer programs have bugs. Use this file at your own risk.
 //
-// August 23, 2018
+// March 28, 2019
 
-#define VERSION "2.1.5"
+#define VERSION "2.2"
 //#define VERSION ""
 
 #include <time.h>
@@ -22,6 +22,7 @@
 #include "Parameters.h"
 #include "analysis.h"
 #include "MathStats.h"
+#include "rplot.h"
 #ifdef _OPENMP
   #include <omp.h>
 #endif
@@ -29,9 +30,9 @@
 void ShowBanner()
 {
 #ifndef VERSION
-   printf("KING - (c) 8/23/2018 Wei-Min Chen");
+   printf("KING - (c) 3/27/2019 Wei-Min Chen");
 #else
-   printf("KING " VERSION " - (c) 2010-2018 Wei-Min Chen");
+   printf("KING " VERSION " - (c) 2010-2019 Wei-Min Chen");
 #endif
    printf("\n");
 }
@@ -100,6 +101,7 @@ int main(int argc, char **argv)
    bool AssocSKAT = false;
    bool AssocVCR = false;
    bool LinkageNPL = false;
+   bool LinkageHE = false;
    bool LinkageIBD = false;
    bool LinkageIBDMI = false;
    bool LinkageGDT = false;
@@ -115,6 +117,7 @@ int main(int argc, char **argv)
    bool LinkageROHMAP = false;
    bool LinkageROHMAPQT = false;
    bool IBDAnalysis = false;
+   bool LinkageMDS = false;
    int mincons = 0;
 //   bool stratFLAG = false;
    String prefix("king");
@@ -133,7 +136,8 @@ int main(int argc, char **argv)
    String phefile("");
    String covfile("");
    int sexchr=23;
-
+   int IDadded = 0;
+   bool splitPed = false;
    int Bit64 = 0;
    bool Bit64Flag = sizeof(void*)==8? true: false;
 
@@ -141,6 +145,10 @@ int main(int argc, char **argv)
       LONG_PARAMETER_GROUP("Close Relative Inference")
          LONG_PARAMETER("related", &flags[RelatedFLAG])
          LONG_PARAMETER("duplicate", &flags[DuplicateFLAG])
+#ifndef VERSION
+      LONG_PARAMETER_GROUP("Rare Variant Inference")
+         LONG_PARAMETER("exact", &secondFlag) // 2nd-degree relationship
+#endif
       LONG_PARAMETER_GROUP("Pairwise Relatedness Inference")
          LONG_PARAMETER("kinship", &flags[KinshipFLAG])
          LONG_PARAMETER("ibdseg", &flags[IBDSegFLAG])
@@ -150,7 +158,6 @@ int main(int argc, char **argv)
          LONG_INTPARAMETER("degree", &degree)
 #ifndef VERSION
       LONG_PARAMETER_GROUP("Rare Variant Inference")
-         LONG_PARAMETER("close", &secondFlag) // 2nd-degree relationship
          LONG_PARAMETER("distant", &distantFlag) // distant relative pairs through sharing of ancient segments with a third relative
          LONG_PARAMETER("porel", &poFlag) // relatives of parent-offspring
          LONG_INTPARAMETER("adjustPC", &adjustPC)
@@ -163,6 +170,10 @@ int main(int argc, char **argv)
          LONG_PARAMETER("unrelated", &flags[UnrelatedFLAG])
          LONG_PARAMETER("cluster", &flags[ClusterFLAG])
          LONG_PARAMETER("build", &flags[BuildFLAG])
+#ifndef VERSION
+         LONG_PARAMETER("splitped", &splitPed)
+         LONG_INTPARAMETER("idadded", &IDadded)
+#endif
       LONG_PARAMETER_GROUP("QC Report")
          LONG_PARAMETER("bysample", &flags[BysampleFLAG])
          LONG_PARAMETER("bySNP", &flags[BysnpFLAG])
@@ -202,19 +213,23 @@ int main(int argc, char **argv)
          LONG_PARAMETER("popdist", &LinkagePOPDIST)
          LONG_PARAMETER("popibd", &LinkagePOPIBD)
          LONG_PARAMETER("poproh", &LinkagePOPROH)
+      LONG_PARAMETER_GROUP("Linkage Analysis")
+         LONG_PARAMETER("npl", &LinkageNPL)
+         LONG_PARAMETER("HEreg", &LinkageHE)
       LONG_PARAMETER_GROUP("IBD Analysis")
          LONG_PARAMETER("ibdall", &LinkageIBDSEG)
          LONG_PARAMETER("ibdGRM", &LinkageGRM)
-         LONG_PARAMETER("homomap", &LinkageROHMAP)
-         LONG_PARAMETER("mthomo", &LinkageROHMAPQT)
          LONG_PARAMETER("ibdmap", &LinkageIBD)
-         LONG_PARAMETER("npl", &LinkageNPL)
-         LONG_PARAMETER("aucmap", &LinkageAUC)
+         LONG_PARAMETER("ibdmds", &LinkageMDS)
          LONG_PARAMETER("ibdgdt", &LinkageGDT)
-         LONG_PARAMETER("ancestry", &LinkageAncestry)
          LONG_PARAMETER("ibdMI", &LinkageIBDMI)
          LONG_PARAMETER("ibdH2", &LinkageH2)
          LONG_PARAMETER("ibdvc", &LinkageVC)
+         LONG_PARAMETER("aucmap", &LinkageAUC)
+         LONG_PARAMETER("ancestry", &LinkageAncestry)
+      LONG_PARAMETER_GROUP("Homozygosity Mapping")
+         LONG_PARAMETER("homomap", &LinkageROHMAP)
+         LONG_PARAMETER("mthomo", &LinkageROHMAPQT)
       LONG_PARAMETER_GROUP("IBD Parameter")
          LONG_INTPARAMETER("mincons", &mincons)
          LONG_INTPARAMETER("nperm", &permCount)
@@ -260,8 +275,8 @@ int main(int argc, char **argv)
 #endif
       LONG_PARAMETER_GROUP("Computing Parameter")
          LONG_INTPARAMETER("cpus", &CoreCount)
-         LONG_PARAMETER("lessmem", &lessmemFlag)
 #ifndef VERSION
+         LONG_PARAMETER("lessmem", &lessmemFlag)
          LONG_INTPARAMETER("sysbit", &Bit64)
          LONG_PARAMETER("wipeMI", &QCwipe)
          LONG_PARAMETER("pedstat", &pedstat)
@@ -294,7 +309,7 @@ int main(int argc, char **argv)
    pl.Status();
 
    if(binfile.IsEmpty())
-      error("Genotype files are required. e.g.,\n  king -b ex.bed --related\n\nPlease check the reference paper Manichaikul et al. 2010 Bioinformatics,\n\t\t\t\t\tChen et al. 2018,\n          or the KING website at http://people.virginia.edu/~wc9c/KING");
+      error("Genotype files are required. e.g.,\n  king -b ex.bed --related\n\nPlease check the reference paper Manichaikul et al. 2010 Bioinformatics,\n\t\t\t\t\tChen et al. 2019,\n          or the KING website at http://people.virginia.edu/~wc9c/KING");
 
    unsigned int allflags = 0;
    StringArray flagNames(TOTALFLAGCOUNT);
@@ -329,7 +344,7 @@ int main(int argc, char **argv)
          allflags |= base[i];
 
 #ifdef VERSION
-   if(allflags==0){
+   if(allflags==0 && !rplotFlag){
       printf("\nPlease specify one of the following %d options:", TOTALFLAGCOUNT);
       for(int i = 0; i < TOTALFLAGCOUNT; i++)
          printf(" --%s", (const char*)flagNames[i]);
@@ -391,29 +406,29 @@ int main(int argc, char **argv)
       }
    }
 #endif
-   if(LinkageNPL || LinkageIBD || LinkageGDT || LinkageAUC || LinkageAncestry ||
+   if(LinkageNPL || LinkageHE || LinkageIBD || LinkageGDT || LinkageAUC || LinkageAncestry ||
        LinkagePOPDIST || LinkagePOPIBD || LinkageIBDMI || LinkageH2 || LinkageIBDSEG ||
-       LinkagePOPROH || LinkageROHMAP || LinkageROHMAPQT || LinkageVC || LinkageGRM)
+       LinkagePOPROH || LinkageROHMAP || LinkageROHMAPQT || LinkageVC || LinkageGRM || LinkageMDS)
       IBDAnalysis = true;
    // NOT autosomeonly:
    if(flags[KinshipFLAG] || flags[IBSFLAG] || flags[HomoFLAG] || flags[RiskFLAG] ||
       flags[BysnpFLAG] || flags[BysampleFLAG] || flags[AutoQCFLAG] ||
       flags[PLINKFLAG] || flags[TDTFLAG] || flags[MtscoreFLAG] ||
-      AssocVC || AssocRScoreAssoc || IBDAnalysis ||
+      AssocVC || AssocRScoreAssoc || IBDAnalysis || flags[BuildFLAG] ||
       AssocFastAssoc || AssocGRAMMAR || AssocSKAT || merlinFlag )
       engine.autosomeOnly = false;
 
    // NOT genotypeOnly:
    if(flags[RelatedFLAG] || flags[IBSFLAG] || flags[IBDSegFLAG] || flags[PLINKFLAG] ||
       flags[AutoQCFLAG] || flags[BysnpFLAG] || flags[RiskFLAG] || flags[TDTFLAG] || flags[MtscoreFLAG] ||
-      AssocVC || AssocRScoreAssoc || flags[ROHFLAG] || IBDAnalysis ||
+      AssocVC || AssocRScoreAssoc || flags[ROHFLAG] || IBDAnalysis || secondFlag || 
       flags[UnrelatedFLAG] || flags[ClusterFLAG] || flags[BuildFLAG] ||
       AssocFastAssoc || AssocGRAMMAR || AssocSKAT || merlinFlag )
       engine.genotypeOnly = false;
 
    if(prevalence!=_NAN_)
       engine.prevalence = prevalence;
-
+   if(rplotFlag) engine.rplotFlag = true;
 #ifndef VERSION
    if(mincons) engine.mincons = mincons;
    if(kinFilter!=_NAN_) flags[KinshipFLAG] = true;
@@ -519,7 +534,7 @@ int main(int argc, char **argv)
    }else{   // sysbit not (properly) specified
       if(Bit64)
          printf("--sysbit %d is ignored. Please select either 32 or 64 bit for your system.\n", Bit64);
-      if((!Bit64Flag) || (allflags & (base[AutoQCFLAG] | base[HomoFLAG] | base[PCAFLAG])) ){
+      if((!Bit64Flag) || (allflags & (base[AutoQCFLAG] | base[HomoFLAG] | base[PCAFLAG]))){
             Bit64 = 32;
             engine.Bit64 = 32;
       }else{
@@ -545,9 +560,12 @@ int main(int argc, char **argv)
    if(lessmemFlag) engine.lessmemFlag = true;
    String filenames(binfile);
    if(filenames.Find(",")>-1){
-      Bit64 = 32;
-      engine.Bit64 = 32;
-      engine.ReadMultiplePlinkBinaryBigData(binfile);
+//      Bit64 = 32;
+//      engine.Bit64 = 32;
+      if(!famfile.IsEmpty() || !bimfile.IsEmpty() || !covfile.IsEmpty() || !phefile.IsEmpty())
+         engine.ReadMultiplePlinkBinaryBigData(binfile, famfile, bimfile, covfile, phefile);
+      else
+         engine.ReadMultiplePlinkBinaryBigData(binfile);
    }else{
       String line;
       StringArray tokens;
@@ -563,17 +581,10 @@ int main(int argc, char **argv)
          int m = pedfile.Find(".bed");
          if(m == -1) error("Please use either MERLIN or KING binary format as input.");
          String filename=pedfile.SubStr(0,m);
-         if(lessmemFlag){
-            if(!famfile.IsEmpty() || !bimfile.IsEmpty() || !covfile.IsEmpty() || !phefile.IsEmpty())
-               engine.ReadPlinkBinaryBigDataWithLessMemory(filename, famfile, bimfile, covfile, phefile);
-            else
-               engine.ReadPlinkBinaryBigDataWithLessMemory(filename);
-         }else{
-            if(!famfile.IsEmpty() || !bimfile.IsEmpty() || !covfile.IsEmpty() || !phefile.IsEmpty())
-               engine.ReadPlinkBinaryBigData(filename, famfile, bimfile, covfile, phefile);
-            else
-               engine.ReadPlinkBinaryBigData(filename);
-         }
+         if(!famfile.IsEmpty() || !bimfile.IsEmpty() || !covfile.IsEmpty() || !phefile.IsEmpty())
+            engine.ReadPlinkBinaryBigData(filename, famfile, bimfile, covfile, phefile);
+         else
+            engine.ReadPlinkBinaryBigData(filename);
       }else{
          String pedfile(binfile);
          int m = pedfile.Find(".king");
@@ -671,7 +682,10 @@ int main(int argc, char **argv)
          break;
       }
    }
-
+   if(!allflags && rplotFlag){
+      if(engine.SplitPedigree()) plotSplitped(prefix);
+      exit(0);
+   }
    for(int flag = 0; flag < TOTALFLAGCOUNT; flag++)
       if(flags[flag])
          switch(flag){
@@ -681,7 +695,7 @@ int main(int argc, char **argv)
                   engine.ClusterFamily(2, degree);
                   if(flags[MDSFLAG]) {
                      engine.mds_family();
-                     if(rplotFlag) engine.plotPopStructure();
+                     if(rplotFlag) plotPopStructure(prefix, projectionFlag);
                   }
                   if(flags[BysampleFLAG]) {
                      if(Bit64==64)
@@ -696,8 +710,10 @@ int main(int argc, char **argv)
                         engine.QC_By_SNP();
                   }
                   if(flags[TDTFLAG]) engine.TDT();
-               }else
+               }else{   // --cluster by itself
                   engine.ClusterFamily(0, degree);
+                  if(rplotFlag && Bit64==64 && engine.totalLength>10000000) plotCluster(prefix);
+               }
                break;
             case BysampleFLAG:
                if(!flags[ClusterFLAG]){
@@ -706,6 +722,7 @@ int main(int argc, char **argv)
                   else
                      engine.QC_By_Sample();
                }
+               if(rplotFlag) printf("R plot for --bysample is not available.\n");
                break;
             case BysnpFLAG:
                if(!flags[ClusterFLAG]){
@@ -714,15 +731,20 @@ int main(int argc, char **argv)
                   else
                      engine.QC_By_SNP();
                }
+               if(rplotFlag) printf("R plot for --bySNP is not available.\n");
                break;
             case TDTFLAG:
                if(!flags[ClusterFLAG])
                   engine.TDT();
+               if(rplotFlag) printf("R plot for --tdt is not available.\n");
                break;
             case MDSFLAG:
                if(!flags[ClusterFLAG]){
                   if(Bit64==64){
-                     engine.mds();
+                     if(projectionFlag)
+                        engine.mds_projection();
+                     else
+                        engine.mds();
                   }else{
                   /*
                   if(familyData){
@@ -744,7 +766,7 @@ int main(int argc, char **argv)
                   } */
                         engine.mds();
                   }
-                  if(rplotFlag) engine.plotPopStructure();
+                  if(rplotFlag) plotPopStructure(prefix, projectionFlag);
                }
                break;
             case RelatedFLAG:
@@ -754,7 +776,7 @@ int main(int argc, char **argv)
                   if(allflags & base[HomoFLAG]) printf("Please do not run --related together with --homog\n");
                   if(allflags & base[PCAFLAG]) printf("Please do not run --related together with --pca\n");
                }else{
-                  if(ped.count < 10){
+                  if(engine.idCount < 10){
                      if(allflags & base[KinshipFLAG])
                         printf("\n--related is skipped for a rather small sample size.\n");
                      else{
@@ -763,7 +785,11 @@ int main(int argc, char **argv)
                      }
                   }else{   // integrated inference
                      engine.IntegratedRelationshipInference();
-                     if(rplotFlag) engine.plotRelationship();
+                     if(rplotFlag) {
+                        plotRelationship(prefix);
+                        if(engine.SplitPedigree()) plotMIerror(prefix);
+                        plotUniqueFamily(prefix, degree==0?1:degree, "related");
+                     }
                   }
                }
                break;
@@ -772,6 +798,7 @@ int main(int argc, char **argv)
                   engine.ComputeBigDataDuplicate64Bit();
                else
                   engine.ComputeBigDataDuplicate();
+               if(rplotFlag) plotDuplicate(prefix);
                break;
             case UnrelatedFLAG:
                engine.unrelatedExtraction = true;
@@ -781,16 +808,22 @@ int main(int argc, char **argv)
                for(int i = 0; i < engine.ped.count; i++)
                   engine.ped[i].affections[0] = 1; // make sure all individuals are analyzed
                engine.mds_family_projection();
+               if(rplotFlag) printf("R plot for --unrelated is not available.\n");
                break;
             case AutoQCFLAG:
                engine.autoQC(callrateN==_NAN_? 0.95: callrateN, callrateM==_NAN_? 0.95: callrateM);
                break;
             case MtscoreFLAG:
                engine.LMMSCORE();
+               if(rplotFlag) printf("R plot for --mtscore is not available.\n");
                break;
             case BuildFLAG:
-               if(engine.ClusterFamily(1, degree))
-                  engine.rebuild();
+               bool built;
+               if(engine.ClusterFamily(1, degree)){
+                  if(IDadded) built = engine.rebuild(IDadded);
+                  else built = engine.rebuild();
+               }
+               if(rplotFlag && built) plotBuild(prefix);
                break;
             case PCAFLAG:
                if(familyData && !projectionFlag){
@@ -803,29 +836,53 @@ int main(int argc, char **argv)
                   }
                }else
                   engine.pca(1);
-               if(rplotFlag) engine.plotPopStructure();
+               if(rplotFlag) plotPopStructure(prefix, projectionFlag);
                break;
             case IBSFLAG:
                if(Bit64 == 64)
                   engine.ComputeExtendedIBS64Bit();
                else
                   engine.ComputeShortExtendedIBS();
+               if(rplotFlag) printf("R plot for --ibs is not available.\n");
                break;
             case KinshipFLAG:
                if(Bit64==64){
                   if(degree){
-                     IntArray temp;
+                     IntArray *temp=new IntArray[engine.defaultMaxCoreCount];
                      engine.ComputeLongRobustKinship64BitWithFilter(temp);
+                     delete []temp;
                   }else
                      engine.ComputeLongRobustKinship64Bit();
                }else
                   engine.ComputeShortRobustKinship();
+               if(rplotFlag) printf("R plot for --kinship is not available.\n");
                break;
             case IBDSegFLAG:
                if(Bit64==64){
-                  if(ped.count < 10)
-                     printf("\n--kinship analysis is recommended for such a small sample size.\n");
-                  engine.ComputeIBDSegment64Bit();
+                  if(ped.count < 10){
+                     printf("\n--kinship analysis carried out instead for such a small sample size.\n");
+                     if(degree){
+                        IntArray *temp=new IntArray[engine.defaultMaxCoreCount];
+#ifndef VERSION
+                        engine.ComputeLongRobustKinship64BitWithFilter(temp);
+#else
+                        engine.ComputeLongRobustKinship64Bit();
+#endif
+                        delete []temp;
+                     }else
+                        engine.ComputeLongRobustKinship64Bit();
+                  }else{
+                     IntArray temp1(0), temp2(0);
+                     if(degree)
+#ifndef VERSION
+                        //engine.ComputeIBDSegment64BitWithFilter(temp1, temp2);
+                        engine.ComputeIBDSegment64Bit(temp1, temp2);
+#else
+                        engine.ComputeIBDSegment64Bit(temp1, temp2);
+#endif
+                     else
+                        engine.ComputeIBDSegment64Bit(temp1, temp2);
+                  }
                }else{
                   printf("--ibdseg is skipped.\n");
                   if(allflags & base[AutoQCFLAG]) printf("Please do not run --ibdseg together with --autoQC\n");
@@ -833,9 +890,10 @@ int main(int argc, char **argv)
                   if(allflags & base[PCAFLAG]) printf("Please do not run --ibdseg together with --pca\n");
                }
                if(rplotFlag) {
-                  if(!degree)
-                     printf("Please use --degree, --degree 2, or --degree 3 to reduce #relatives.\n");
-                  engine.plotIBDSeg();
+                  plotIBDSeg(prefix);
+                  if(degree) plotUniqueFamily(prefix, degree, "ibdseg");
+                  else
+                     printf("  For additional relative pair plots please use --degree, --degree 2, or --degree 3.\n");
                }
                break;
             case HomoFLAG:
@@ -843,6 +901,7 @@ int main(int argc, char **argv)
                   engine.ComputeShortFastXHomoKinship();
                else
                   engine.ComputeShortFastHomoKinship();
+               if(rplotFlag) printf("R plot for --homog is not available.\n");
                break;
             case ROHFLAG:
                if(Bit64==64)
@@ -853,28 +912,35 @@ int main(int argc, char **argv)
                   if(allflags & base[HomoFLAG]) printf("Please do not run --roh together with --homog\n");
                   if(allflags & base[PCAFLAG]) printf("Please do not run --roh together with --pca\n");
                }
+               if(rplotFlag) printf("R plot for --roh is not available.\n");
                break;
             default:
                printf("Not available\n");
          }
+
+#ifndef VERSION
    if(IBDAnalysis){
       if(LinkageNPL){
          engine.NPL();
-         if(rplotFlag) engine.plotNPL();
+         if(rplotFlag) plotNPL(prefix, sexchr);
+      }
+      if(LinkageHE){
+         engine.HEreg();
+         if(rplotFlag) plotHEreg(prefix, sexchr);
       }
       if(LinkageIBD){
          engine.IBDmapping(permCount);
-         if(rplotFlag) engine.plotIBDmapping();
+         if(rplotFlag) plotIBDmapping(prefix, sexchr);
       }
       if(LinkageGDT)
          engine.IBDGDT();
       if(LinkageAncestry){
          engine.AncestryInference();
-         if(rplotFlag) engine.plotAncestry();
+         if(rplotFlag) plotAncestry(prefix);
       }
       if(LinkagePOPDIST){
          engine.PopulationDistance();
-         if(rplotFlag) engine.plotPopDist();
+         if(rplotFlag) plotPopDist(prefix);
       }
       if(LinkageAUC){
          if(!positions.IsEmpty()){
@@ -895,16 +961,16 @@ int main(int argc, char **argv)
             engine.AUCpredicting(allchr, allpos);
          }else{
             engine.AUCmapping();
-            if(rplotFlag) engine.plotAUCmapping();
+            if(rplotFlag) plotAUCmapping(prefix, sexchr);
          }
       }
       if(LinkagePOPIBD){
          engine.PopulationIBD();
-//         if(rplotFlag) engine.plotPopDist();
+//         if(rplotFlag) plotPopDist(prefix);
       }
       if(LinkagePOPROH){
          engine.PopulationROH();
-         if(rplotFlag) engine.plotPopROH();
+         if(rplotFlag) plotPopROH(prefix, sexchr);
       }
       if(LinkageIBDMI)
          engine.IBDMI();
@@ -915,14 +981,14 @@ int main(int argc, char **argv)
             engine.HomozygosityMappingMH(stratName);
          else
             engine.HomozygosityMapping();
-         if(rplotFlag) engine.plotROHmapping(stratName);
+         if(rplotFlag) plotROHmapping(prefix, stratName, sexchr);
       }
       if(LinkageROHMAPQT){
          if(stratName!="")
             engine.HomozygosityMappingForQTMH(stratName);
          else
             engine.HomozygosityMappingForQT();
-         if(rplotFlag) engine.plotROHforQT();
+         if(rplotFlag) plotROHforQT(prefix, sexchr);
       }
       if(LinkageVC)
          engine.IBDVC();
@@ -930,12 +996,18 @@ int main(int argc, char **argv)
          engine.IBDGRM();
       if(LinkageIBDSEG)
          engine.AllIBDSegments();
+      if(LinkageMDS){
+         if(projectionFlag)
+            engine.IBDMDS_Projection();
+         else
+            engine.IBDMDS();
+         if(rplotFlag) plotPopStructure(prefix, projectionFlag);
+      }
       exit(0);
    }
-
-#ifndef VERSION
-   if(flags[PLINKFLAG]){
-      engine.WritePlink();
+   if(splitPed){
+      engine.SplitPedigree();
+      if(rplotFlag) plotSplitped(prefix);
       exit(0);
    }
    if(PhaseFlag){
@@ -964,6 +1036,7 @@ int main(int argc, char **argv)
    }
 
    if(!flags[KinshipFLAG] && !individual) flags[KinshipFLAG] = true;
+/*
    if(merlinFlag){
       engine.WriteMerlin();
       exit(0);
@@ -976,6 +1049,7 @@ int main(int argc, char **argv)
       engine.WriteKingBinary(pedfile);
       exit(0);
    }
+   */
    if(ped.count < 5 && flags[HomoFLAG]){
       printf("Sample size is too small. Robust KING is used.\n");
    }
@@ -1017,6 +1091,10 @@ int main(int argc, char **argv)
 
 
 #endif
+
+   timer = time(NULL);
+   tblock = localtime(&timer);
+   printf("KING ends at %s", asctime(tblock));
 }
 
 
@@ -1025,4 +1103,12 @@ int main(int argc, char **argv)
 //#include "Kinship.h"
 //#include "string.h"
 //#include "MerlinSort.h"
+/*
+         if(lessmemFlag){
+            if(!famfile.IsEmpty() || !bimfile.IsEmpty() || !covfile.IsEmpty() || !phefile.IsEmpty())
+               engine.ReadPlinkBinaryBigDataWithLessMemory(filename, famfile, bimfile, covfile, phefile);
+            else
+               engine.ReadPlinkBinaryBigDataWithLessMemory(filename);
+         }else{
+*/
 

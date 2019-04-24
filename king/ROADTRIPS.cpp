@@ -351,7 +351,7 @@ void Engine::ROADTRIPS()
    if(fp == NULL) error("Cannot open %s to write.", (const char*)lmmfile);
    fprintf(fp, "SNP");
    if(chromosomes.Length()) fprintf(fp, "\tChr");
-   if(positions.Length()) fprintf(fp, "\tPos");
+   if(bp.Length()) fprintf(fp, "\tPos");
    fprintf(fp, "\tLabelA\tLabela\tFreqA\tN\tChisq\tPvalue\n");
 
    IntArray *mIndex[16];
@@ -704,8 +704,8 @@ void Engine::ROADTRIPS()
             fprintf(fp, "SNP%d", pos+1);
          if(chromosomes.Length())
             fprintf(fp, "\t%d", chromosomes[pos]);
-         if(positions.Length())
-            fprintf(fp, "\t%.6lf", positions[pos]);
+         if(bp.Length())
+            fprintf(fp, "\t%.6lf", bp[pos]*0.000001);
          fprintf(fp, "\t%s\t%s\t%.3lf\t%d",
             (const char*)alleleLabel[0][pos], (const char*)alleleLabel[1][pos],
             freq[m], NSample[m]);
@@ -739,65 +739,5 @@ void Engine::ROADTRIPS()
       delete []PhiOne[m];
    }
 }
-
-
-
-
-//   printf("VDV: %.3lf\n", VDV0total);
-
-/*                  if(f2==f1){
-                     for(int i = 0; i < gidCount[f1]; i++){
-                        vid1 = gid[f1][i];
-                        for(int j = 0; j < gidCount[f2]; j++){
-                           vid2 = gid[f2][j];
-                           VDV -= VDV0[vid1][vid2];
-                        }
-                     }
-                     for(int i = 0; i < nIndex[m][f1][0]; i++){
-                        id1 = nIndex[m][f1][i+1];
-                        vid1 = gid[f1][id1];
-                        for(int j = 0; j < nIndex[m][f2][0]; j++){
-                           id2 = nIndex[m][f2][j+1];
-                           vid2 = gid[f2][id2];
-                           VDV += V[m][f1][id1] * D[vid1][vid2] * V[m][f2][id2];
-                        }
-                     }
-                  }else if(mIndex[m][f2][0]){
-                     for(int i = 0; i < gidCount[f1]; i++){
-                        vid1 = gid[f1][i];
-                        for(int j = 0; j < gidCount[f2]; j++){
-                           vid2 = gid[f2][j];
-                           VDV -= VDV0[vid1][vid2];
-                        }
-                     }
-                     for(int i = 0; i < nIndex[m][f1][0]; i++){
-                        id1 = nIndex[m][f1][i+1];
-                        vid1 = gid[f1][id1];
-                        for(int j = 0; j < nIndex[m][f2][0]; j++){
-                           id2 = nIndex[m][f2][j+1];
-                           vid2 = gid[f2][id2];
-                           VDV += V[m][f1][id1] * D[vid1][vid2] * V[m][f2][id2];
-                        }
-                     }
-                  }else{ //  f2 no missing
-*/
-//         D[i][j] = D[j][i] = D[i][j] / (D[i][i]*D[j][j]);
-//   for(int i = 0; i < vidCount; i++) D[i][i] = 1.0;
-//#define INDEX(I,J) (I*(I+1)/2+J)
-
-         /*
-            if(mIndex[m][f][0] && nIndex[m][f][0]){ // missingness in the family
-               for(int i = 0; i < nIndex[m][f][0]; i++){
-                  id = nIndex[m][f][i+1];
-                  V[m][f][id] =
-                  V[m][f][id] - VOne[m] / OnePhiOne[m] * PhiOne[m][f][id];
-                  score[m] += V[m][f][id] * Y[m][f][id];
-               }
-            }else if(nIndex[m][f][0] == 0)// all missing in this family
-               V[m][f].Zero(); // no contribution to score calculation
-            else
-               for(int i = 0; i < gidCount[f]; i++)
-                  score[m] += V[m][f][i] * Y[m][f][i];
-            */
 
 

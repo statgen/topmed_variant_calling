@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
 // qc.cpp
-// (c) 2010-2018 Wei-Min Chen
+// (c) 2010-2019 Wei-Min Chen
 //
 // This file is distributed as part of the KING source code package
 // and may not be redistributed in any form, without prior written
@@ -12,7 +12,7 @@
 //
 // All computer programs have bugs. Use this file at your own risk.
 //
-// March 22, 2018
+// Feb 22, 2019
 
 #include "analysis.h"
 #include "Kinship.h"
@@ -304,8 +304,8 @@ void Engine::QC_By_SNP64Bit()
    FILE *fp = fopen(pedfile, "wt");
    if(fp == NULL) error("Cannot open %s to write.", (const char*)pedfile);
    fprintf(fp, "SNP");
-   if(chromosomes.Length() || xpositions.Length()) fprintf(fp, " Chr");
-   if(positions.Length() || xpositions.Length()) fprintf(fp, " Pos");
+   if(chromosomes.Length() || xbp.Length()) fprintf(fp, " Chr");
+   if(bp.Length() || xbp.Length()) fprintf(fp, " Pos");
    fprintf(fp, " Label_A Label_a Freq_A N N_AA N_Aa N_aa CallRate");
    if(L0Count) fprintf(fp, " N_MZ N_HetMZ N_errMZ Err_InMZ Err_InHetMZ");
    if(LpoCount) fprintf(fp, " N_PO N_HomPO N_errPO Err_InPO Err_InHomPO");
@@ -313,7 +313,7 @@ void Engine::QC_By_SNP64Bit()
    fprintf(fp, "\n");
    for(int m = 0; m < markerCount; m++){
       fprintf(fp, "%s %d %d %s %s %.4lf %d %d %d %d %.4lf",
-            (const char*)snpName[m], chromosomes[m], int(positions[m]*1000000+0.5),
+            (const char*)snpName[m], chromosomes[m], bp[m],
             (const char*)alleleLabel[0][m], (const char*)alleleLabel[1][m],
             missingCounts[m] == idCount? 0:
                (AACounts[m] + AaCounts[m]*0.5) / (idCount - missingCounts[m]),
@@ -442,7 +442,7 @@ void Engine::QC_By_SNP64Bit()
       for(int j = 0; j < 16; j++){
          if(m+j >= xmarkerCount) continue;
          fprintf(fp, "%s X %d %s %s %.4lf %d %d %d %d %.4lf",
-            (const char*)xsnpName[m+j], int(xpositions[m+j]*1000000+0.5),
+            (const char*)xsnpName[m+j], xbp[m+j],
             (const char*)xalleleLabel[0][m+j], (const char*)xalleleLabel[1][m+j],
             frequencies[j],
             idCount - missingCount[j], AACount[j], AaCount[j],
@@ -541,8 +541,8 @@ void Engine::QC_By_SNP64Bit()
          else
             fprintf(fp, "SNPY%d", m+j+1);
          fprintf(fp, " Y");
-         if(ypositions.Length())
-            fprintf(fp, " %d", int(ypositions[m+j]*1000000+0.5));
+         if(ybp.Length())
+            fprintf(fp, " %d", ybp[m+j]);
          fprintf(fp, " %s %s %.4lf %d %d %d %d %.4lf",
             (const char*)yalleleLabel[0][m+j], (const char*)yalleleLabel[1][m+j],
             frequencies[j],
@@ -619,8 +619,8 @@ void Engine::QC_By_SNP64Bit()
          else
             fprintf(fp, "SNPMT%d", m+j+1);
          fprintf(fp, " MT");
-         if(mtpositions.Length())
-            fprintf(fp, " %d", int(mtpositions[m+j]*1000000+0.5));
+         if(mtbp.Length())
+            fprintf(fp, " %d", mtbp[m+j]);
          fprintf(fp, " %s %s %.4lf %d %d %d %d %.4lf",
             (const char*)mtalleleLabel[0][m+j], (const char*)mtalleleLabel[1][m+j],
             frequencies[j],
@@ -1602,8 +1602,8 @@ void Engine::QC_By_SNP()
                sprintf(buffer, " %d", chromosomes[m]);
                buffers[b].Add(buffer);
             }
-            if(positions.Length()){
-               sprintf(buffer, " %d", int(positions[m]*1000000+0.5));
+            if(bp.Length()){
+               sprintf(buffer, " %d", bp[m]);
                buffers[b].Add(buffer);
             }
             sprintf(buffer, " %s %s",
@@ -1649,8 +1649,8 @@ void Engine::QC_By_SNP()
    FILE *fp = fopen(pedfile, "wt");
    if(fp == NULL) error("Cannot open %s to write.", (const char*)pedfile);
    fprintf(fp, "SNP");
-   if(chromosomes.Length() || xpositions.Length()) fprintf(fp, " Chr");
-   if(positions.Length() || xpositions.Length()) fprintf(fp, " Pos");
+   if(chromosomes.Length() || xbp.Length()) fprintf(fp, " Chr");
+   if(bp.Length() || xbp.Length()) fprintf(fp, " Pos");
    fprintf(fp, " Label_A Label_a Freq_A N N_AA N_Aa N_aa CallRate");
    if(L0.Length()) fprintf(fp, " N_MZ N_HetMZ N_errMZ Err_InMZ Err_InHetMZ");
    if(Lpo.Length()) fprintf(fp, " N_PO N_HomPO N_errPO Err_InPO Err_InHomPO");
@@ -1787,8 +1787,8 @@ void Engine::QC_By_SNP()
          else
             fprintf(fp, "SNPX%d", m+j+1);
          fprintf(fp, " X");
-         if(xpositions.Length())
-            fprintf(fp, " %d", int(xpositions[m+j]*1000000+0.5));
+         if(xbp.Length())
+            fprintf(fp, " %d", xbp[m+j]);
          fprintf(fp, " %s %s %.4lf %d %d %d %d %.4lf",
             (const char*)xalleleLabel[0][m+j], (const char*)xalleleLabel[1][m+j],
             frequencies[j],
@@ -1890,8 +1890,8 @@ void Engine::QC_By_SNP()
          else
             fprintf(fp, "SNPY%d", m+j+1);
          fprintf(fp, " Y");
-         if(ypositions.Length())
-            fprintf(fp, " %d", int(ypositions[m+j]*1000000+0.5));
+         if(ybp.Length())
+            fprintf(fp, " %d", ybp[m+j]);
          fprintf(fp, " %s %s %.4lf %d %d %d %d %.4lf",
             (const char*)yalleleLabel[0][m+j], (const char*)yalleleLabel[1][m+j],
             frequencies[j],
@@ -1969,8 +1969,8 @@ void Engine::QC_By_SNP()
          else
             fprintf(fp, "SNPMT%d", m+j+1);
          fprintf(fp, " MT");
-         if(mtpositions.Length())
-            fprintf(fp, " %d", int(mtpositions[m+j]*1000000+0.5));
+         if(mtbp.Length())
+            fprintf(fp, " %d", mtbp[m+j]);
          fprintf(fp, " %s %s %.4lf %d %d %d %d %.4lf",
             (const char*)mtalleleLabel[0][m+j], (const char*)mtalleleLabel[1][m+j],
             frequencies[j],

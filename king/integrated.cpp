@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
-// integrated.cpp                               
-// (c) 2010-2018 Wei-Min Chen
+// integrated.cpp
+// (c) 2010-2019 Wei-Min Chen
 //
 // This file is distributed as part of the KING source code package
 // and may not be redistributed in any form, without prior written
@@ -12,7 +12,7 @@
 //
 // All computer programs have bugs. Use this file at your own risk.
 //
-// August 23, 2018
+// Dec 20, 2018
 
 #include <math.h>
 #include "analysis.h"
@@ -21,14 +21,9 @@
   #include <omp.h>
 #endif
 
-void Engine::ScreenCloseRelativesInSubset64Bit(IntArray & rpList)
+void Engine::ScreenCloseRelativesInSubset64Bit(IntArray rpList[])
 {  // --related
    if(longCount < 65 || !bigdataFlag) return;  // screening is not needed
-   if(idCount > 3000000){
-      printf("This version of KING supports up to %d samples.\n", 3000000);
-      printf("Please contact the KING author to allow an even larger sample size.\n");
-      return;
-   }
    int long_prescan = 64;
    int stop1 = long_prescan;
 //   int stop2 = stop1 + (long_prescan<<3);
@@ -93,31 +88,32 @@ void Engine::ScreenCloseRelativesInSubset64Bit(IntArray & rpList)
          hetInOnePersonCount[i][1] = (word2+(word2>>32)) & 0xFFFFFFFF;
       }
    }  // parallel among individuals ends
-   IntArray *ibuffer = new IntArray[defaultMaxCoreCount];
    for(int i = 0; i < defaultMaxCoreCount; i++)
-      ibuffer[i].Dimension(0);
+      rpList[i].Dimension(0);
    double threshold;
    int id1, id2, IBS0Count, het1Count, het2Count, HetHomCount, HomHomCount;
-   const char LOOPBLOCKINGSIZE=(relativedegree==1?32:16);
-   const char SHIFTSIZE=(relativedegree==1?5:4);
+   int LOOPBLOCKINGSIZE=(relativedegree==1?32:16);
+   char SHIFTSIZE=(relativedegree==1?5:4);
+   if(idCount > (1<<20)){  // sample size over a million
+      int count = (idCount >> 20);
+      int F = 0;
+      for(; count; F++) count >>= 1;
+      LOOPBLOCKINGSIZE <<= F;
+      SHIFTSIZE += F;
+   }
    unsigned int blockCount = (idCount-1)/LOOPBLOCKINGSIZE+1;
    unsigned int loopIndexLength = (blockCount & 1)? blockCount * ((blockCount+1)/2):
       (blockCount/2) * (blockCount+1);
-   unsigned short int **loopIndex = new unsigned short int *[loopIndexLength];
-   for(unsigned int k = 0; k < loopIndexLength; k++)
-      loopIndex[k] = new unsigned short int [2];
+   unsigned int *loopIndex = new unsigned int [loopIndexLength];
    unsigned int index = 0;
-   for(int i = 0; i < idCount; i += LOOPBLOCKINGSIZE)
-      for(int j = i; j < idCount; j += LOOPBLOCKINGSIZE){
-         loopIndex[index][0] = (i>>SHIFTSIZE);
-         loopIndex[index][1] = (j>>SHIFTSIZE);
-         index ++;
-      }
+   for(unsigned int i = 0; i < idCount; i += LOOPBLOCKINGSIZE){
+      unsigned int iShifted = (i<<(16-SHIFTSIZE));
+      for(int j = i; j < idCount; j += LOOPBLOCKINGSIZE)
+         loopIndex[index++] = iShifted | (j>>SHIFTSIZE);
+   }
+   int firstCount = loopIndexLength / defaultMaxCoreCount;
+   int onepercent = firstCount? (firstCount+99) / 100: 1;
    int thread = 0;
-//   long int *rawrelativeCount = new long int [defaultMaxCoreCount];
-//   for(int t = 0; t < defaultMaxCoreCount; t++)
-//      rawrelativeCount[t] = 0;
-
 if(relativedegree==1){
 #ifdef _OPENMP
    #pragma omp parallel num_threads(defaultMaxCoreCount) \
@@ -128,9 +124,13 @@ if(relativedegree==1){
    #pragma omp for
 #endif
    for(unsigned long int k = 0; k < loopIndexLength; k++){
-      int i = (int)loopIndex[k][0]<<SHIFTSIZE;
+      if(k < firstCount && (k % onepercent) == 0) {
+         printf("%d%%\r", k/onepercent);
+         fflush(stdout);
+      }
+      int i = (loopIndex[k]>>16)<<SHIFTSIZE;
       int iMax = (i > idCount - LOOPBLOCKINGSIZE? idCount: i + LOOPBLOCKINGSIZE);
-      int j = (int)loopIndex[k][1]<<SHIFTSIZE;
+      int j = (loopIndex[k]&0xFFFF)<<SHIFTSIZE;
       int jMax = (j > idCount - LOOPBLOCKINGSIZE? idCount: j + LOOPBLOCKINGSIZE);
       for(id1 = i; id1 < iMax; id1++){
          for(id2 = j; id2 < jMax; id2++){
@@ -219,9 +219,8 @@ if(relativedegree==1){
             if(i==j && id2 <= id1) continue;
 
             if(IBS0Count < HomHomCount * 0.01){   // C_Hom > 99%
-               ibuffer[thread].Push(id1);
-               ibuffer[thread].Push(id2);
-//               rawrelativeCount[thread] ++;
+               rpList[thread].Push(id1);
+               rpList[thread].Push(id2);
                continue;
             }
 
@@ -248,7 +247,6 @@ if(relativedegree==1){
 //            threshold = (0.5-0.125)*m3 - HetHomCount*0.25;  // kinship < 0.0625
             if((IBS0Count >= HomHomCount * 0.2) && (het1Count+het2Count < HetHomCount*1.857143))
                continue;   // pass if CHet < 0.3 AND CHom < 0.8
-//            rawrelativeCount[thread] ++;
 
             // Stage 2: few pairs
             word1 = word2 = 0;
@@ -290,8 +288,8 @@ if(relativedegree==1){
             m3 = (het1Count < het2Count? het1Count: het2Count);
             threshold = (0.5-kincutoff2)*m3 - HetHomCount*0.25;  // kinship < 0.125
             if(IBS0Count >= threshold) continue;
-            ibuffer[thread].Push(id1);
-            ibuffer[thread].Push(id2);
+            rpList[thread].Push(id1);
+            rpList[thread].Push(id2);
          }  // end of id2
       }  // end of id1
    }  // end of loop blocking
@@ -308,9 +306,13 @@ if(relativedegree==1){
    #pragma omp for
 #endif
    for(unsigned long int k = 0; k < loopIndexLength; k++){
-      int i = (int)loopIndex[k][0]<<SHIFTSIZE;
+      if(k < firstCount && (k % onepercent) == 0) {
+         printf("%d%%\r", k/onepercent);
+         fflush(stdout);
+      }
+      int i = (loopIndex[k]>>16)<<SHIFTSIZE;
       int iMax = (i > idCount - LOOPBLOCKINGSIZE? idCount: i + LOOPBLOCKINGSIZE);
-      int j = (int)loopIndex[k][1]<<SHIFTSIZE;
+      int j = (loopIndex[k]&0xFFFF)<<SHIFTSIZE;
       int jMax = (j > idCount - LOOPBLOCKINGSIZE? idCount: j + LOOPBLOCKINGSIZE);
       for(id1 = i; id1 < iMax; id1++){
          for(id2 = j; id2 < jMax; id2++){
@@ -426,9 +428,8 @@ if(relativedegree==1){
             m3 = (het1Count < het2Count? het1Count: het2Count);
             threshold = (0.5-kincutoff2)*m3 - HetHomCount*0.25;  // kinship < 0.0442
             if(IBS0Count >= threshold || IBS0Count >= HomHomCount * 0.375) continue;
-//            rawrelativeCount[thread] ++;
-            ibuffer[thread].Push(id1);
-            ibuffer[thread].Push(id2);
+            rpList[thread].Push(id1);
+            rpList[thread].Push(id2);
          }  // end of id2
       }  // end of id1
    }  // end of loop blocking
@@ -436,8 +437,6 @@ if(relativedegree==1){
 }
 #endif
 }
-   for(unsigned int k = 0; k < loopIndexLength; k++)
-      delete []loopIndex[k];
    delete []loopIndex;
    for(int i = 0; i < idCount; i++){
       delete []missingInOnePersonCount[i];
@@ -445,15 +444,6 @@ if(relativedegree==1){
    }
    delete []missingInOnePersonCount;
    delete []hetInOnePersonCount;
-   rpList.Dimension(0);
-//   long int rawcount = 0;
-   for(int i = 0; i < defaultMaxCoreCount; i++){
-//      rawcount += rawrelativeCount[i];
-      rpList.Append(ibuffer[i]);
-   }
-   delete []ibuffer;
-//   delete []rawrelativeCount;
-//   return rawcount;
 }
 
 void Engine::IntegratedRelationshipInference()
@@ -550,18 +540,12 @@ void Engine::IntegratedRelationshipInference()
       if(Bit64==64)
          KinshipInSubset64Bit(pairs, HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts, IBSCounts);
       else
-         KinshipInSubset(pairs, HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts);
+         KinshipInSubset(pairs, HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts, IBSCounts);
       //****************************Compute kinship coefficient*****************************
 
       Vector ibdprops, maxLengths, ibd2props, maxLengths2;
-      if(IBDvalidFlag){
-         //****************Compute IBD2 Segments****************************
-         if(Bit64==64)
-            IBDSegInSubset64Bit(pairs, ibdprops, maxLengths, ibd2props, maxLengths2);
-         else
-            IBD2SegInSubset(pairs, ibd2props, maxLengths2);
-         //****************Compute IBD2 Segments****************************
-      }
+      if(IBDvalidFlag && Bit64 == 64)
+         IBDSegInSubset64Bit(pairs, ibdprops, maxLengths, ibd2props, maxLengths2);
       String outfile;
       outfile.Copy(prefix);
       outfile.Add(".kin");
@@ -616,8 +600,8 @@ void Engine::IntegratedRelationshipInference()
                else
                   type = "UN";
             }else // Duplicate
-               type="DUP/MZ";
-            if(type=="DUP/MZ"){
+               type="Dup/MZ";
+            if(type=="Dup/MZ"){
                afterCount[0]++;
                errorFlag = phis[p]==0.5? 0: 1;
             }else if(type=="PO"){
@@ -743,34 +727,34 @@ void Engine::IntegratedRelationshipInference()
 #ifdef _OPENMP
    printf("%d CPU cores are used...\n", defaultMaxCoreCount);
 #endif
-   IntArray allpairs0, allpairs1(0), allpairs;
+   IntArray *allpairs0 = new IntArray [defaultMaxCoreCount];
+   IntArray *allpairs = new IntArray [defaultMaxCoreCount];
    // most computationally intensive here: SCREENING RELATIVES
    if(Bit64==64){
       if(relativedegree < 3)
          ScreenCloseRelativesInSubset64Bit(allpairs0);
-      else{ // more distant relatives
-         IntArray ids;
-         ComputeLongRobustKinship64BitWithFilter(ids, false);
-         int count = ids.Length()/2;
-         allpairs0.Dimension(0);
-         for(int i = 0; i < count; i++){
-            allpairs0.Push(ids[i*2]);
-            allpairs0.Push(ids[i*2+1]);
-         }
-      }
+      else // more distant relatives
+         ComputeLongRobustKinship64BitWithFilter(allpairs0, false);
    }else
       ScreenCloseRelativesInSubset(allpairs0);
    //****************SCREENING RELATIVES end************************
 
-   for(int i = 0; i < allpairs0.Length()/2; i++){
-      id1 = allpairs0[i*2];
-      id2 = allpairs0[i*2+1];
-      if(ped[phenoid[id1]].famid != ped[phenoid[id2]].famid){
-         allpairs1.Push(id1);
-         allpairs1.Push(id2);
+   long long int midrelativeCount = 0;
+   for(int t = 0; t < defaultMaxCoreCount; t++)
+      allpairs[t].Dimension(0);
+   for(int t = 0; t < defaultMaxCoreCount; t++){
+      int pairCount = allpairs0[t].Length()/2;
+      for(int i = 0; i < pairCount; i++){
+         id1 = allpairs0[t][i*2];
+         id2 = allpairs0[t][i*2+1];
+         if(ped[phenoid[id1]].famid != ped[phenoid[id2]].famid){
+            allpairs[t].Push(id1);
+            allpairs[t].Push(id2);
+         }
       }
+      midrelativeCount += allpairs[t].Length()/2;
    }
-   int midrelativeCount = allpairs1.Length() / 2;
+   delete []allpairs0;
    if(midrelativeCount==0){
       printf("                                           ends at %s", currentTime());
       printf("No close relatives are inferred.\n\n");
@@ -784,144 +768,135 @@ void Engine::IntegratedRelationshipInference()
       kincutoff1 *= 0.5;
    }
    if(midrelativeCount > 0){
-/*
-      printf("  Stage 1 (with %d SNPs): %u relative pairs detected (with Kinship > %.4lf)\n",
-         stop1*16>markerCount? markerCount: stop1*16,
-         rawrelativeCount, kincutoff1);
-      printf("  Stage 2 (with %d SNPs): %u out of %u remain related (with Kinship > %.4lf)\n",
-         stop2*16>markerCount? markerCount: stop2*16,
-         midrelativeCount, rawrelativeCount, kincutoff2);
-*/
       if(relativedegree < 3){
-         printf("  Stages 1&2 (with %d SNPs): %u pairs of relatives are detected (with kinship > %.4lf)\n",
+         printf("  Stages 1&2 (with %d SNPs): %lli pairs of relatives are detected (with kinship > %.4lf)\n",
             markerCount < 32768? markerCount: 32768, midrelativeCount, kincutoff2);
          printf("                               Screening ends at %s", currentTime());
-      }
-      Vector pM(midrelativeCount);
-      for(int i = 0; i < midrelativeCount; i++){
-         pM[i] = allpairs1[i*2];
-         pM[i] *= idCount;
-         pM[i] += allpairs1[i*2+1];
-      }
-      QuickIndex index;
-      index.Index(pM);
-      allpairs.Dimension(midrelativeCount*2);
-      for(int i = 0; i < midrelativeCount; i++){
-         int k = index[i];
-         allpairs[i*2] = allpairs1[k*2];
-         allpairs[i*2+1] = allpairs1[k*2+1];
+         fflush(stdout);
       }
    }else { // not screened
-      allpairs.Dimension(0);
+      for(int t = 0; t < defaultMaxCoreCount; t++)
+         allpairs[t].Dimension(0);
+      midrelativeCount = (idCount & 1)? (idCount-1)/2*idCount: idCount/2*(idCount-1);
+      long long int blockSize = (midrelativeCount-1)/defaultMaxCoreCount+1;
+      long long int index = 0;
       for(int i = 0; i < idCount; i++)
          for(int j = i+1; j < idCount; j++){
-            allpairs.Push(i);
-            allpairs.Push(j);
+            int thread = index / blockSize;
+            allpairs[thread].Push(i);
+            allpairs[thread].Push(j);
+            index ++;
          }
-      midrelativeCount = allpairs.Length() / 2;
    }
    IntArray HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts, IBSCounts;
-
-   //****************************Compute kinship coefficient*****************************
-   if(Bit64==64)
-      KinshipInSubset64Bit(allpairs, HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts, IBSCounts);
-   else
-      KinshipInSubset(allpairs, HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts);
-   //****************************Compute kinship coefficient*****************************
-
    Vector ibdprops, maxLengths, ibd2props, maxLengths2;
-   if(IBDvalidFlag){
-      //******************Compute IBD2 Segments****************************
-      if(Bit64==64)
-         IBDSegInSubset64Bit(allpairs, ibdprops, maxLengths, ibd2props, maxLengths2);
-      else
-         IBD2SegInSubset(allpairs, ibd2props, maxLengths2);
-      //******************Compute IBD2 Segments****************************
-   }
+
    String outfile(prefix);
    outfile.Add(".kin0");
    FILE *fp = fopen(outfile, "wt");
    fprintf(fp, "FID1\tID1\tFID2\tID2\tN_SNP\tHetHet\tIBS0\tHetConc\tHomIBS0\tKinship");
    if(IBDvalidFlag) fprintf(fp, "\tIBD1Seg\tIBD2Seg\tPropIBD\tInfType");
    fprintf(fp,"\n");
-   int relativeCount = 0;
    for(int j = 0; j < 6; j++)
       afterCount[j] = 0;
-   for(int p = 0; p < midrelativeCount; p++){
-      if(!het1Counts[p] && !het2Counts[p] && !HetHetCounts[p]) continue;
-      id1 = allpairs[p*2];
-      id2 = allpairs[p*2+1];
-      smaller = HetHetCounts[p] + (het1Counts[p] < het2Counts[p]? het1Counts[p]: het2Counts[p]);
-      kinship = 0.5 - ((het1Counts[p]+het2Counts[p])*0.25+IBS0Counts[p])/smaller;
-      if(IBDvalidFlag){
-         ibdprop = ibdprops[p];
-         ibd2prop = ibd2props[p];
-      }
-      if(relativedegree == 1){
+   int fpCount = 0;
+
+   for(int t = 0; t < defaultMaxCoreCount; t++){
+      int pairCount = allpairs[t].Length()/2;
+      if(pairCount == 0) continue;
+
+      //****************************Compute kinship coefficient*****************************
+      if(Bit64==64)
+         KinshipInSubset64Bit(allpairs[t], HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts, IBSCounts);
+      else
+         KinshipInSubset(allpairs[t], HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts, IBSCounts);
+      //****************************Compute kinship coefficient*****************************
+
+      if(IBDvalidFlag && Bit64 == 64)
+         IBDSegInSubset64Bit(allpairs[t], ibdprops, maxLengths, ibd2props, maxLengths2);
+
+      for(int p = 0; p < pairCount; p++){
+         if(!het1Counts[p] && !het2Counts[p] && !HetHetCounts[p]) continue;
+         id1 = allpairs[t][p*2];
+         id2 = allpairs[t][p*2+1];
+         smaller = HetHetCounts[p] + (het1Counts[p] < het2Counts[p]? het1Counts[p]: het2Counts[p]);
+         kinship = 0.5 - ((het1Counts[p]+het2Counts[p])*0.25+IBS0Counts[p])/smaller;
+         if(IBDvalidFlag){
+            ibdprop = ibdprops[p];
+            ibd2prop = ibd2props[p];
+         }
+         if(relativedegree == 1){
+            if(IBDvalidFlag){
+               double pi = ibd2prop + ibdprop * 0.5;
+               if(((kinship < lowerbound) && // kinship < 0.177 AND following criteria is not 1st-degree
+                  ((pi < 0.3535534) || (ibd2prop <= 0.08 && ibdprop+ibd2prop <= 0.9))) ) {fpCount++; continue;}
+            }else{
+               if(kinship < lowerbound) {fpCount++; continue;}
+            }
+         }else{   // degree==2
+            if(IBDvalidFlag){
+               if((kinship < 0) || ((kinship < lowerbound) && (ibd2prop*0.5 + ibdprop*0.25 < lowerbound))) {fpCount++; continue;}
+            }else{
+               if(kinship < lowerbound) {fpCount++; continue;}
+            }
+         }
+         CHet = HetHetCounts[p] * 1.0/ (HetHetCounts[p] + het1Counts[p] + het2Counts[p]);
+         notMissingCount = HetHetCounts[p] + het1Counts[p] + het2Counts[p] + HomHomCounts[p];
+         fprintf(fp, "%s\t%s\t%s\t%s\t%d\t%.4lf\t%.4lf\t%.4lf\t%.4lf\t%.4lf",
+            (const char*)ped[phenoid[id1]].famid, (const char*)ped[phenoid[id1]].pid,
+            (const char*)ped[phenoid[id2]].famid, (const char*)ped[phenoid[id2]].pid,
+            notMissingCount, HetHetCounts[p]*1.0/notMissingCount, IBS0Counts[p]*1.0/notMissingCount,
+            CHet, // CHet
+            IBS0Counts[p]*1.0/(IBS0Counts[p]+IBSCounts[p]-HetHetCounts[p]), kinship);
          if(IBDvalidFlag){
             double pi = ibd2prop + ibdprop * 0.5;
-            if(((kinship < lowerbound) && // kinship < 0.177 AND following criteria is not 1st-degree
-                  ((pi < 0.3535534) || (ibd2prop <= 0.08 && ibdprop+ibd2prop <= 0.9))) ) continue;
-         }else{
-            if(kinship < lowerbound) continue;
+            fprintf(fp, "\t%.4lf\t%.4lf\t%.4lf\t", ibdprop, ibd2prop, pi);
+            if(CHet<0.8){
+               if(pi > 0.3535534){  // 1st-degree
+                  if(ibdprop + ibd2prop > 0.96 || (ibdprop + ibd2prop > 0.9 && ibd2prop <= 0.08)){
+                     fprintf(fp, "PO");
+                     afterCount[1]++;
+                     afterCount[5]++;
+                  }else if(ibd2prop > 0.08){
+                     fprintf(fp, "FS");
+                     afterCount[1]++;
+                  }else{
+                     fprintf(fp, "2nd");
+                     afterCount[2]++;
+                  }
+               }else if(pi > 0.1767767){  // 2nd-degree
+                  if(pi > 0.32 && ibd2prop > 0.15){
+                     fprintf(fp, "FS");
+                     afterCount[1]++;
+                  }else{
+                     fprintf(fp, "2nd");
+                     afterCount[2]++;
+                  }
+               }else if(pi > 0.08838835){
+                  fprintf(fp, "3rd");
+                  afterCount[3]++;
+               }else if(pi > 0.04419417){
+                  fprintf(fp, "4th");
+               }else
+                  fprintf(fp, "UN");
+            }else{ // Duplicate
+               fprintf(fp, "Dup/MZ");
+               afterCount[0]++;
+            }
          }
-      }else{   // degree==2
-         if(IBDvalidFlag){
-            if((kinship < 0) || ((kinship < lowerbound) && (ibd2prop*0.5 + ibdprop*0.25 < lowerbound))) continue;
-         }else{
-            if(kinship < lowerbound) continue;
-         }
+         fprintf(fp, "\n");
       }
-      CHet = HetHetCounts[p] * 1.0/ (HetHetCounts[p] + het1Counts[p] + het2Counts[p]);
-      notMissingCount = HetHetCounts[p] + het1Counts[p] + het2Counts[p] + HomHomCounts[p];
-      fprintf(fp, "%s\t%s\t%s\t%s\t%d\t%.4lf\t%.4lf\t%.4lf\t%.4lf\t%.4lf",
-         (const char*)ped[phenoid[id1]].famid, (const char*)ped[phenoid[id1]].pid,
-         (const char*)ped[phenoid[id2]].famid, (const char*)ped[phenoid[id2]].pid,
-         notMissingCount, HetHetCounts[p]*1.0/notMissingCount, IBS0Counts[p]*1.0/notMissingCount,
-         CHet, // CHet
-         IBS0Counts[p]*1.0/(IBS0Counts[p]+IBSCounts[p]-HetHetCounts[p]), kinship);
-      if(IBDvalidFlag){
-         double pi = ibd2prop + ibdprop * 0.5;
-         fprintf(fp, "\t%.4lf\t%.4lf\t%.4lf\t", ibdprop, ibd2prop, pi);
-         if(CHet<0.8){
-            if(pi > 0.3535534){  // 1st-degree
-               if(ibdprop + ibd2prop > 0.96 || (ibdprop + ibd2prop > 0.9 && ibd2prop <= 0.08)){
-                  fprintf(fp, "PO");
-                  afterCount[1]++;
-                  afterCount[5]++;
-               }else if(ibd2prop > 0.08){
-                  fprintf(fp, "FS");
-                  afterCount[1]++;
-               }else{
-                  fprintf(fp, "2nd");
-                  afterCount[2]++;
-               }
-            }else if(pi > 0.1767767){  // 2nd-degree
-               if(pi > 0.32 && ibd2prop > 0.15){
-                  fprintf(fp, "FS");
-                  afterCount[1]++;
-               }else{
-                  fprintf(fp, "2nd");
-                  afterCount[2]++;
-               }
-            }else if(pi > 0.08838835){
-               fprintf(fp, "3rd");
-               afterCount[3]++;
-            }else if(pi > 0.04419417){
-               fprintf(fp, "4th");
-            }else
-               fprintf(fp, "UN");
-         }else{ // Duplicate
-            fprintf(fp, "DUP/MZ");
-            afterCount[0]++;
-         }
-      }
-      fprintf(fp, "\n");
-      relativeCount++;
-   }
+   }  // end of t loop
    fclose(fp);
+   delete []allpairs;
+   long long int relativeCount = midrelativeCount - fpCount;
+   if(IBDvalidFlag){
+      relativeCount = afterCount[0] + afterCount[1];
+      if(relativedegree >= 2) relativeCount += afterCount[2];
+      if(relativedegree >= 3) relativeCount += afterCount[3];
+   }
    if(relativedegree < 3)  // fast algorithm for inference of close relatives
-      printf("  Final Stage (with %d SNPs): %d pairs of relatives (up to %d%s-degree) are confirmed\n",
+      printf("  Final Stage (with %d SNPs): %lli pairs of relatives (up to %d%s-degree) are confirmed\n",
       markerCount, relativeCount, relativedegree, relativedegree==1?"st":"nd");
    printf("                               Inference ends at %s", currentTime());
    if(relativeCount==0){
@@ -938,7 +913,7 @@ void Engine::IntegratedRelationshipInference()
    relativedegree = originaldegree;
 }
 
-void Engine::ScreenCloseRelativesInSubset(IntArray & rpList)
+void Engine::ScreenCloseRelativesInSubset(IntArray rpList[])
 {
    if(shortCount < 256 || !bigdataFlag) return;  // screening is not needed
    if(idCount > 0x1FFFFF){
@@ -962,8 +937,7 @@ void Engine::ScreenCloseRelativesInSubset(IntArray & rpList)
    char oneoneCount[65536];
    for(int i = 0; i < 65536; i++)
       oneoneCount[i] = oneCount[i&255] + oneCount[(i>>8)&255];
-   int /*start1, */stop1, start2, stop2;
-//   start1 = 0;
+   int stop1, start2, stop2;
    stop1 = short_prescan;
    if(stop1 > shortCount) stop1 = shortCount;
    start2 = stop1;
@@ -1023,28 +997,21 @@ void Engine::ScreenCloseRelativesInSubset(IntArray & rpList)
    }
    delete []masks;
    const int cutoffMissingCount = stop1*16-MINSNPCOUNT;
-   IntArray *ibuffer = new IntArray[defaultMaxCoreCount];
    for(int i = 0; i < defaultMaxCoreCount; i++)
-      ibuffer[i].Dimension(0);
+      rpList[i].Dimension(0);
    double threshold, smaller, kinship;
    int id1, id2, IBS0Count, het1Count, het2Count, HetHomCount, HomHomCount, HetHetCount;
    const char LOOPBLOCKINGSIZE=32;
    const char SHIFTSIZE=5;
    unsigned int loopIndexLength = (unsigned int)((idCount-1)/LOOPBLOCKINGSIZE+1)*(((idCount-1)/LOOPBLOCKINGSIZE+1)+1)/2;
-   unsigned short int **loopIndex = new unsigned short int *[loopIndexLength];
-   for(unsigned int k = 0; k < loopIndexLength; k++)
-      loopIndex[k] = new unsigned short int [2];
+   unsigned int *loopIndex = new unsigned int [loopIndexLength];
    unsigned int index = 0;
-   for(int i = 0; i < idCount; i += LOOPBLOCKINGSIZE)
-      for(int j = i; j < idCount; j += LOOPBLOCKINGSIZE){
-         loopIndex[index][0] = (i>>SHIFTSIZE);
-         loopIndex[index][1] = (j>>SHIFTSIZE);
-         index ++;
-      }
+   for(unsigned int i = 0; i < idCount; i += LOOPBLOCKINGSIZE){
+      unsigned int iShifted = (i<<(16-SHIFTSIZE));
+      for(int j = i; j < idCount; j += LOOPBLOCKINGSIZE)
+         loopIndex[index++] = iShifted | (j>>SHIFTSIZE);
+   }
    int thread = 0;
-//   long int *rawrelativeCount = new long int [defaultMaxCoreCount];
-//   for(int t = 0; t < defaultMaxCoreCount; t++)
-//      rawrelativeCount[t] = 0;
    char revbase[65536];
    for(int i = 0; i < 16; i++)
       revbase[shortbase[i]] = i;
@@ -1061,9 +1028,9 @@ void Engine::ScreenCloseRelativesInSubset(IntArray & rpList)
    #pragma omp for
 #endif
    for(unsigned long int k = 0; k < loopIndexLength; k++){
-      int i = (int)loopIndex[k][0]<<SHIFTSIZE;
+      int i = (loopIndex[k]>>16)<<SHIFTSIZE;
       int iMax = (i > idCount - LOOPBLOCKINGSIZE? idCount: i + LOOPBLOCKINGSIZE);
-      int j = (int)loopIndex[k][1]<<SHIFTSIZE;
+      int j = (loopIndex[k]&0xFFFF)<<SHIFTSIZE;
       int jMax = (j > idCount - LOOPBLOCKINGSIZE? idCount: j + LOOPBLOCKINGSIZE);
       int jMin = j;
       for(id1 = i; id1 < iMax; id1++){
@@ -1201,8 +1168,8 @@ void Engine::ScreenCloseRelativesInSubset(IntArray & rpList)
             smaller = HetHetCount + (het1Count < het2Count? het1Count: het2Count);
             kinship = 0.5 - ((het1Count+het2Count)*0.25+IBS0Count)/smaller;
             if(kinship < kincutoff2) continue;
-            ibuffer[thread].Push(id1);
-            ibuffer[thread].Push(id2);
+            rpList[thread].Push(id1);
+            rpList[thread].Push(id2);
          }  // end of id2
       }  // end of id1
    }  // end of loop blocking
@@ -1219,9 +1186,9 @@ void Engine::ScreenCloseRelativesInSubset(IntArray & rpList)
    #pragma omp for
 #endif
    for(unsigned long int k = 0; k < loopIndexLength; k++){
-      int i = (int)loopIndex[k][0]<<SHIFTSIZE;
+      int i = (loopIndex[k]>>16)<<SHIFTSIZE;
       int iMax = (i > idCount - LOOPBLOCKINGSIZE? idCount: i + LOOPBLOCKINGSIZE);
-      int j = (int)loopIndex[k][1]<<SHIFTSIZE;
+      int j = (loopIndex[k]&0xFFFF)<<SHIFTSIZE;
       int jMax = (j > idCount - LOOPBLOCKINGSIZE? idCount: j + LOOPBLOCKINGSIZE);
       int jMin = j;
       for(id1 = i; id1 < iMax; id1++){
@@ -1378,16 +1345,14 @@ void Engine::ScreenCloseRelativesInSubset(IntArray & rpList)
             kinship = 0.5 - ((het1Count+het2Count)*0.25+IBS0Count)/smaller;
             if(kinship < kincutoff2) continue;
             */
-            ibuffer[thread].Push(id1);
-            ibuffer[thread].Push(id2);
+            rpList[thread].Push(id1);
+            rpList[thread].Push(id2);
          }  // end of id2
       }  // end of id1
    }  // end of loop blocking
 #ifdef _OPENMP
 }
 #endif
-   for(unsigned int k = 0; k < loopIndexLength; k++)
-      delete []loopIndex[k];
    delete []loopIndex;
    for(int i = 0; i < idCount; i++){
       delete []missingInOnePersonCount[i];
@@ -1397,14 +1362,5 @@ void Engine::ScreenCloseRelativesInSubset(IntArray & rpList)
    delete []missingInOnePersonCount;
    delete []hetInOnePersonCount;
    delete []missingWordIndex;
-   rpList.Dimension(0);
-//   long int rawcount = 0;
-   for(int i = 0; i < defaultMaxCoreCount; i++){
-//      rawcount += rawrelativeCount[i];
-      rpList.Append(ibuffer[i]);
-   }
-   delete []ibuffer;
-//   delete []rawrelativeCount;
-//   return rawcount;
 }
 

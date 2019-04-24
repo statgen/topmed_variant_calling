@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
 // bigdataOffline.cpp
-// (c) 2010-2017 Wei-Min Chen
+// (c) 2010-2019 Wei-Min Chen
 //
 // This file is distributed as part of the KING source code package
 // and may not be redistributed in any form, without prior written
@@ -12,7 +12,7 @@
 //
 // All computer programs have bugs. Use this file at your own risk.
 //
-// May 7, 2017
+// March 20, 2019
 
 #include <math.h>
 #include "analysis.h"
@@ -23,10 +23,289 @@
 #include "MathSVD.h"
 #include "QuickIndex.h"
 #include "MathCholesky.h"
+#include "Intervals.h"
 
 #ifdef _OPENMP
   #include <omp.h>
 #endif
+
+void Engine::ComputeBigDataSecondDegree()
+{
+   if(Bit64 != 64) {printf("Cannot run --exact analysis without 64-bit system.\n"); return;}
+   if(longCount==0) {printf("No genotype data.\n"); return;}
+   printf("Autosome genotypes stored in %d words for each of %d individuals.\n", longCount, idCount);
+   printf("\nOptions in effect:\n");
+   printf("\t--exact\n");
+   if(CoreCount)
+      printf("\t--cpus %d\n", CoreCount);
+   if(prefix!="king")
+      printf("\t--prefix %s\n", (const char*)prefix);
+   printf("\n");
+   bool IBDvalidFlag = PreSegment();
+   if(!IBDvalidFlag) {
+      printf("%s\n", (const char*)segmessage);
+      printf("Cannot run --exact analysis without IBD segments.\n");
+      return;
+   }
+   int notMissingCount, afterCount[6], i1, i2, degree, beforeCount[6];
+   double ibs0, kinship, smaller, CHet, ibdprop, ibd2prop;
+   IntArray pairs, pairI, HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts, IBSCounts;
+   Vector ibdprops, maxLengths, ibd2props, maxLengths2, pis;
+   Matrix Phi;
+   String type, outfile;
+   outfile.Copy(prefix);
+   outfile.Add(".kin");
+   FILE *fp = fopen(outfile, "wt");
+   fprintf(fp, "FID\tID1\tID2\tN_SNP\tZ0\tPhi\tHetHet\tIBS0\tHetConc\tHomIBS0\tKinship\tIBD1Seg\tIBD2Seg\tPropIBD\tInfType\tExact\n");
+   for(int i = 0; i < 6; i++) beforeCount[i] = afterCount[i] = 0;
+   Kinship kin;
+   IntArray *pair2Index;
+   IntArray tempArray, tempArray2, ibd1seg;
+   String exactType;
+   IntArray *allrelatives, *PR, *ibd1segs;
+   for(int f = 0; f < ped.familyCount; f++){
+      int idfCount = id[f].Length();
+      if(idfCount < 2) continue;   // no pairs in family f
+      kin.Setup(*ped.families[f]);
+      pairs.Dimension(0);
+      pairI.Dimension(0);
+      Phi.Dimension(idfCount, idfCount);
+      for(int i = 0; i < idfCount; i++)
+         for(int j = i+1; j < idfCount; j++){
+            pairs.Push(geno[id[f][i]]);
+            pairs.Push(geno[id[f][j]]);
+            pairI.Push(i);
+            pairI.Push(j);
+            double phi = kin(ped[id[f][i]], ped[id[f][j]]);
+            Phi[i][j] = phi;
+            double pi0 = 0.0;
+            if(phi < 0.2)
+               pi0 = 1-4*phi;
+            else if(phi < 0.3 && ped[id[f][i]].isSib(ped[id[f][j]]))
+               pi0 = 0.25;
+            Phi[j][i] = pi0;
+         }
+      int pairCount = pairs.Length()/2;
+      KinshipInSubset64Bit(pairs, HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts, IBSCounts);
+      IntArray *ibd1segs = new IntArray [pairCount];
+      IBDSegInSubset64Bit(pairs, ibdprops, maxLengths, ibd2props, maxLengths2, ibd1segs);
+
+      allrelatives = new IntArray[idfCount];
+      PR = new IntArray[idfCount];
+      for(int i = 0; i < idfCount; i++) {
+         allrelatives[i].Dimension(0);
+         PR[i].Dimension(0);
+      }
+      pis.Dimension(pairCount);
+      pair2Index = new IntArray[idfCount];
+      for(int i = 0; i < idfCount; i++)
+         pair2Index[i].Dimension(idfCount);
+      for(int p = 0; p < pairCount; p++){
+         if(!het1Counts[p] && !het2Counts[p] && !HetHetCounts[p]) continue;
+         int i1 = pairI[p*2]; int i2 = pairI[p*2+1];
+         double CHet = HetHetCounts[p] * 1.0 / (HetHetCounts[p]+het1Counts[p]+het2Counts[p]);
+         double ibdprop = ibdprops[p];
+         double ibd2prop = ibd2props[p];
+         double pi = ibd2prop + ibdprop * 0.5;
+         pair2Index[i1][i2] = pair2Index[i2][i1] = p;
+         pis[p] = pi;
+         if(CHet<0.8){
+            bool isFS = false;
+            if(pi > 0.3535534 && (ibdprop + ibd2prop < 0.96) &&
+               (ibdprop + ibd2prop < 0.9 || ibd2prop > 0.08) && (ibd2prop > 0.15 || pi > 0.4) )
+                  isFS = true;
+            if(pi > 0.04419417 && !isFS){// closer than 4th-degree
+               allrelatives[i1].Push(i2);
+               allrelatives[i2].Push(i1);
+            }
+         }
+      }
+      for(int i = 0; i < idfCount; i++){
+         int allrelativeCount = allrelatives[i].Length();
+         for(int j = 0; j < allrelativeCount; j++){
+            int R1 = allrelatives[i][j];
+            for(int k = j+1; k < allrelativeCount; k++){
+               int R2 = allrelatives[i][k];
+               if(RoRP(ibd1segs[pair2Index[i][R1]], ibd1segs[pair2Index[i][R2]],
+                  ibd1segs[pair2Index[R1][R2]], bp) < 0.125){
+                  if(PR[i].Find(R1)==-1) PR[i].Push(R1);
+                  if(PR[i].Find(R2)==-1) PR[i].Push(R2);
+               }
+            }
+         }
+      }
+      for(int p = 0; p < pairCount; p++){
+         if(!het1Counts[p] && !het2Counts[p] && !HetHetCounts[p]) continue;
+         i1 = pairI[p*2]; i2 = pairI[p*2+1];
+         kinship = (HetHetCounts[p] - IBS0Counts[p]*2.0) / (HetHetCounts[p]*2+het1Counts[p]+het2Counts[p]);
+         notMissingCount = HetHetCounts[p]+het1Counts[p]+het2Counts[p]+HomHomCounts[p];
+         ibs0 = IBS0Counts[p]*1.0/notMissingCount;
+         CHet = HetHetCounts[p] * 1.0 / (HetHetCounts[p]+het1Counts[p]+het2Counts[p]);
+         degree = 4;
+         if(Phi[i1][i2] > 0.0442)
+            degree = int(-log(Phi[i1][i2])/log(2.0) - 0.5);
+         if(degree < 4){
+            beforeCount[degree] ++;
+            if(degree == 1)
+            if(Phi[i2][i1]==0) beforeCount[5] ++;
+         }else
+            beforeCount[4] ++;
+         ibdprop = ibdprops[p];
+         ibd2prop = ibd2props[p];
+         double pi = ibd2prop + ibdprop * 0.5;
+         if(CHet<0.8){  // not MZ/Dup
+            if(pi > 0.3535534){  // 1st-degree
+               if(ibdprop + ibd2prop > 0.96 || (ibdprop + ibd2prop > 0.9 && ibd2prop <= 0.08))
+                  type = "PO";
+               else if(ibd2prop > 0.08)
+                  type = "FS";
+               else
+                  type = "2nd";
+            }else if(pi > 0.1767767){  // 2nd-degree
+               if(pi > 0.32 && ibd2prop > 0.15)
+                  type = "FS";
+               else
+                  type = "2nd";
+            }else if(pi > 0.08838835)
+               type = "3rd";
+            else if(pi > 0.04419417)
+               type = "4th";
+            else
+               type = "UN";
+         }else // Duplicate
+            type="Dup/MZ";
+         if(type=="Dup/MZ"){
+            afterCount[0]++;
+         }else if(type=="PO"){
+            afterCount[1]++;
+            afterCount[5]++;
+         }else if(type=="FS"){
+            afterCount[1]++;
+         }else if(type=="2nd"){
+            afterCount[2]++;
+         }else if(type=="3rd"){
+            afterCount[3]++;
+         }else if(type=="4th"){
+            afterCount[4]++;
+         }else{   // type="UN"
+            afterCount[4]++;
+         }
+         exactType.Clear();
+         if(type == "2nd"){
+            int pr1Count = PR[i1].Length();
+            int pr2Count = PR[i2].Length();
+            int relative = -1;
+            double maxPI = 0;
+            for(int i = 0; i < pr1Count; i++)
+               for(int j = 0; j < pr2Count; j++)
+                  if(PR[i1][i] == PR[i2][j]){
+                     int R = PR[i1][i];
+                     double pi1 = pis[pair2Index[i1][R]];
+                     double pi2 = pis[pair2Index[i2][R]];
+                     if(pi1 < 0.355 && pi2 < 0.355 && (pi1 > 0.0884 || pi2 > 0.0884)){
+                        double joinRatio = RoRP(ibd1segs[pair2Index[R][i1]],
+                           ibd1segs[pair2Index[R][i2]], ibd1segs[pair2Index[i1][i2]], bp);
+                        if(joinRatio > 0.8){ // relevant common relative
+                           if(pi1 > maxPI) {maxPI = pi1; relative = R;}
+                           if(pi2 > maxPI) {maxPI = pi2; relative = R;}
+                        }
+                     }
+                  }
+            if(relative != -1){
+               printf("(%s, %s)'s common parental relative is %s, ",
+                  (const char*)ped[id[f][i1]].pid,
+                  (const char*)ped[id[f][i2]].pid,
+                  (const char*)ped[id[f][relative]].pid);
+               tempArray = ibd1segs[pair2Index[i1][relative]];  // PR
+               tempArray2 = ibd1segs[pair2Index[i2][relative]];  // OR
+               SegmentIntersect(tempArray, tempArray2, ibd1seg);
+               double intersectLength = SegmentLength(ibd1seg, bp);
+               double temp2Length = SegmentLength(tempArray2, bp);   // OR length in Mb
+               double tempLength = SegmentLength(tempArray, bp);   // OR length in Mb
+               if(temp2Length > 100000000){  // OR Length > 100Mb
+                  double ratio1 = intersectLength * 1.0 / temp2Length;
+                  int type1 = int(0.5-log(ratio1)/log(2));
+                  double ratio2 = intersectLength * 1.0 / tempLength;
+                  int type2 = int(0.5-log(ratio2)/log(2));
+                  int diff = -9;
+                  if(type1 <= 3 && type2 <= 3){
+                     if(type1 < 0) type1 = 0;
+                     else if(type1 > 2) type1 = 2;
+                     if(type2 < 0) type2 = 0;
+                     else if(type2 > 2) type2 = 2;
+                     diff = ratio2 > ratio1? int(log(ratio2/ratio1)/log(2)+0.5):int(log(ratio2/ratio1)/log(2)-0.5) ;
+                     switch(diff){
+                        case 0: exactType = "HS"; break;
+                        case 1: exactType = "NA/NU"; break;
+                        case -1: exactType = "AN/UN"; break;
+                        case 2: exactType = "GcGp"; break;
+                        case -2: exactType = "GpGc"; break;
+                     }
+                  }
+                  printf("G1=%d (%.2lf), G2=%d (%.2lf), Diff=%d (%.2lf), ExactType: %s\n",
+                     type1, ratio1,
+                     type2, ratio2,
+                     diff, ratio1/ratio2,
+                     exactType.IsEmpty()?"--":(const char*)exactType);
+               }
+            }else{   // no common relatives
+               int IsHS1 = -1;
+               for(int i = 0; i < pr1Count; i++){
+                  int R1 = PR[i1][i];
+                  if(R1==i2) continue;
+                  if(RoRP(ibd1segs[pair2Index[i1][R1]], ibd1segs[pair2Index[i1][i2]],
+                     ibd1segs[pair2Index[R1][i2]], bp) < 0.125){
+                        IsHS1 = R1;
+                        break;
+                     }
+               }
+               int IsHS2 = -1;
+               for(int i = 0; i < pr2Count; i++){
+                  int R2 = PR[i2][i];
+                  if(R2==i1) continue;
+                  if(RoRP(ibd1segs[pair2Index[i2][R2]], ibd1segs[pair2Index[i2][i1]],
+                     ibd1segs[pair2Index[R2][i1]], bp) < 0.125){
+                        IsHS2 = R2;
+                        break;
+                     }
+               }
+               if(IsHS1 > -1 && IsHS2 > -1){
+                  exactType = "HS";
+                  printf("(%s, %s) must be HS for having unrelated relatives %s and %s\n",
+                     (const char*)ped[id[f][i1]].pid,
+                     (const char*)ped[id[f][i2]].pid,
+                     (const char*)ped[id[f][IsHS1]].pid,
+                     (const char*)ped[id[f][IsHS2]].pid);
+               }
+
+            }
+         }
+         fprintf(fp, "%s\t%s\t%s\t%d\t%.3lf\t%.4lf\t%.4lf\t%.4lf\t%.4lf\t%.4lf\t%.4lf\t%.4lf\t%.4lf\t%.4lf\t%s\t%s\n",
+            (const char*)ped[id[f][i1]].famid,
+            (const char*)ped[id[f][i1]].pid,
+            (const char*)ped[id[f][i2]].pid,
+            notMissingCount, Phi[i2][i1], Phi[i1][i2],
+            HetHetCounts[p]*1.0/notMissingCount, ibs0,
+            CHet, // CHet
+            ibs0/(ibs0+(IBSCounts[p]-HetHetCounts[p])*1.0/notMissingCount), kinship,
+            ibdprops[p], ibd2props[p], ibd2props[p] + ibdprops[p]*0.5,
+            (const char*)type, exactType.IsEmpty()? "--": (const char*)exactType);
+      }  // end of pairs
+      delete []pair2Index;
+      delete []allrelatives;
+      delete []PR;
+      delete []ibd1segs;
+   }  // End of f loop for families
+   fclose(fp);
+
+   bool pedigreeFlag = false;
+   for(int i = 0; i < 6; i++)
+      if(beforeCount[i]) pedigreeFlag = true;
+   if(pedigreeFlag){
+      printf("Within-family kinship data saved in file %s\n", (const char*)outfile);
+      printRelationship(beforeCount, afterCount);
+   }
+}
 
 void Engine::ComputeBigDataKinshipAdjustPC()
 {
@@ -673,7 +952,7 @@ void Engine::ComputeBigDataKinshipAdjustPC()
    }
 }
 
-
+/*
 void Engine::ComputeBigDataSecondDegree()
 {
    printf("Autosome genotypes stored in %d", shortCount);
@@ -889,56 +1168,7 @@ void Engine::ComputeBigDataSecondDegree()
                      HetHetHetCount, H31, H32, H312,
                      H123, H213, gen1Count, gen2Count, ancestorCount, genDiff);
                      fprintf(fp, "\n");
-                  /*
-                  if(H312<0.02209709) {
-                     fprintf(fp, "\tN/A\n");
-                     continue; // more distant than 5th-degree
-                  }
-                  if(kinship < 0.08838835){// 3rd-degree
-                     fprintf(fp, "\t%s", (const char*)label_d3[type_d3[genDiff][genMax]]);
-                     if(type_d3[genDiff][genMax]){
-                        if(rel==0) rel=type_d3[genDiff][genMax];
-                        else if(rel!=type_d3[genDiff][genMax])
-                           controversial = true;
-                     }
-                  }else{
-                     fprintf(fp, "\t%s", (const char*)label_d2[type_d2[genDiff][genMax]]);
-                     if(type_d2[genDiff][genMax]){
-                        if(rel==0) rel=type_d2[genDiff][genMax];
-                        else if(rel!=type_d2[genDiff][genMax])
-                           controversial = true;
-                     }
-                  }
-                  fprintf(fp, "\n");
-                  */
                } // end of k
-               /*
-               if(rel){
-                  if(!controversial)
-                     printf("Relationship between %s:%s and %s:%s (kinship=%.3lf) is %s\n",
-                        (const char*)ped[id[f1][i]].famid,
-                        (const char*)ped[id[f1][i]].pid,
-                        (const char*)ped[id[f2][j]].famid,
-                        (const char*)ped[id[f2][j]].pid,
-                        kinship,
-                        kinship < 0.08838835? (const char*)label_d3[rel]: (const char*)label_d2[rel]);
-//                        kinship < 0.08838835? (rel>2?"GG":(rel>1?"AV":"HS")):
-//                        (rel>3?"GG":(rel>2?"AV":(rel>1?"HS":"FC"))));
-                  else
-                     printf("Relationship between %s:%s and %s:%s (kinship=%.3lf) is %s\n",
-                        (const char*)ped[id[f1][i]].famid,
-                        (const char*)ped[id[f1][i]].pid,
-                        (const char*)ped[id[f2][j]].famid,
-                        (const char*)ped[id[f2][j]].pid,
-                        kinship, "controversial");
-               }else
-                     printf("Relationship between %s:%s and %s:%s (kinship=%.3lf) is %s\n",
-                        (const char*)ped[id[f1][i]].famid,
-                        (const char*)ped[id[f1][i]].pid,
-                        (const char*)ped[id[f2][j]].famid,
-                        (const char*)ped[id[f2][j]].pid,
-                        kinship, "still unknown");
-                        */
          }  // end of j
       }  // end of i
 
@@ -947,7 +1177,7 @@ void Engine::ComputeBigDataSecondDegree()
    printf("Exact inference of second-degree relationships is saved in file %s\n",
          (const char*)outfile);
 }
-
+*/
 void Engine::ComputeBigDataPO()
 {
    printf("Autosome genotypes stored in %d", shortCount);

@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
 // ShortKingCore.cpp
-// (c) 2010-2018 Wei-Min Chen
+// (c) 2010-2019 Wei-Min Chen
 //
 // This file is distributed as part of the KING source code package
 // and may not be redistributed in any form, without prior written
@@ -12,7 +12,7 @@
 //
 // All computer programs have bugs. Use this file at your own risk.
 //
-// August 7, 2018
+// Feb 22, 2019
 
 #include <math.h>
 #include <time.h>
@@ -215,13 +215,9 @@ void KingEngine::ReadKingBinaryData(const char *datafile)
    if(mtmarkerCount) printf(", %d mitochondrial SNPs", mtmarkerCount);
    printf("\n");
    shortCount = (markerCount+15)/16;
-//   byteCount = (markerCount+7)/8;
    xshortCount = (xmarkerCount+15)/16;
-//   xbyteCount = (xmarkerCount+7)/8;
    yshortCount = (ymarkerCount+15)/16;
-//   ybyteCount = (ymarkerCount+7)/8;
    mtshortCount = (mtmarkerCount+15)/16;
-//   mtbyteCount = (mtmarkerCount+7)/8;
 
    if(!genotypeOnly){
       for(int i = 0; i < 2; i++){
@@ -254,13 +250,13 @@ void KingEngine::ReadKingBinaryData(const char *datafile)
    SEX.Dimension(0);
    ZG.Dimension(0);
    chromosomes.Dimension(0);
-   positions.Dimension(0);
+   bp.Dimension(0);  //positions.Dimension(0);
    snpName.Dimension(0);
-   xpositions.Dimension(0);
+   xbp.Dimension(0); //xpositions.Dimension(0);
    xsnpName.Dimension(0);
-   ypositions.Dimension(0);
+   ybp.Dimension(0); //ypositions.Dimension(0);
    ysnpName.Dimension(0);
-   mtpositions.Dimension(0);
+   mtbp.Dimension(0);   //mtpositions.Dimension(0);
    mtsnpName.Dimension(0);
    sampleName.Dimension(0);
    affectionNames.Dimension(0);
@@ -336,14 +332,18 @@ void KingEngine::ReadKingBinaryData(const char *datafile)
                for(int i = 2; i < markerCount+2; i++)
                   chromosomes.Push(tokens[i].AsInteger());
             else if(tokens[1] == "KING_POSITION"){
-               for(int i = 2; i < markerCount+2; i++)
-                  positions.Push(tokens[i].AsDouble());
-               for(int i = markerCount+2; i < markerCount+xmarkerCount+2; i++)
-                  xpositions.Push(tokens[i].AsDouble());
-               for(int i = markerCount+xmarkerCount+2; i < markerCount+xmarkerCount+ymarkerCount+2; i++)
-                  ypositions.Push(tokens[i].AsDouble());
-               for(int i = markerCount+xmarkerCount+ymarkerCount+2; i < markerCount+xmarkerCount+ymarkerCount+mtmarkerCount+2; i++)
-                  mtpositions.Push(tokens[i].AsDouble());
+               for(int i = 2; i < markerCount+2; i++){
+                  bp.Push(int(tokens[i].AsDouble()*1000000+0.5)); //positions.Push(tokens[i].AsDouble());
+               }
+               for(int i = markerCount+2; i < markerCount+xmarkerCount+2; i++){
+                  xbp.Push(int(tokens[i].AsDouble()*1000000+0.5));   //xpositions.Push(tokens[i].AsDouble());
+               }
+               for(int i = markerCount+xmarkerCount+2; i < markerCount+xmarkerCount+ymarkerCount+2; i++){
+                  ybp.Push(int(tokens[i].AsDouble()*1000000+0.5));   //ypositions.Push(tokens[i].AsDouble());
+               }
+               for(int i = markerCount+xmarkerCount+ymarkerCount+2; i < markerCount+xmarkerCount+ymarkerCount+mtmarkerCount+2; i++){
+                  mtbp.Push(int(tokens[i].AsDouble()*1000000+0.5));  //mtpositions.Push(tokens[i].AsDouble()); 
+               }
             }
             break;
          case 'S':
@@ -736,7 +736,7 @@ void KingEngine::AfterBinaryLoaded(void)
                   fprintf(fp, "%s\t%d\t%d\t%d\t%d\t%d\n",
                   (const char*)ped.families[f]->famid, ped.families[f]->count,
                   count+pcount, pcount, count, affcount);
-               }                       
+               }
             }
       fclose(fp);
       printf("Nuclear family information (#parent vs. #offspring)\n");
@@ -990,10 +990,10 @@ void KingEngine::BuildShortBinary()
       if(ymarkerCount) yalleleLabel[i].Dimension(ymarkerCount);
       if(mtmarkerCount) mtalleleLabel[i].Dimension(mtmarkerCount);
    }
-   positions.Dimension(0);
-   xpositions.Dimension(0);
-   ypositions.Dimension(0);
-   mtpositions.Dimension(0);
+   bp.Dimension(0);  //positions.Dimension(0);
+   xbp.Dimension(0); //xpositions.Dimension(0);
+   ybp.Dimension(0); //ypositions.Dimension(0);
+   mtbp.Dimension(0);   //mtpositions.Dimension(0); 
    snpName.Dimension(markerCount);
    if(xmarkerCount) xsnpName.Dimension(xmarkerCount);
    if(ymarkerCount) ysnpName.Dimension(ymarkerCount);
@@ -1004,7 +1004,8 @@ void KingEngine::BuildShortBinary()
          chromosomes.Push(0);
       else
          chromosomes.Push(chr);
-      positions.Push(ped.GetMarkerInfo(markers[m])->position*100);
+      //positions.Push(ped.GetMarkerInfo(markers[m])->position*100);
+      bp.Push(int(ped.GetMarkerInfo(markers[m])->position*100000000+0.5));
       snpName[m] = ped.markerNames[markers[m]];
    }
 /*
@@ -1027,7 +1028,8 @@ void KingEngine::BuildShortBinary()
          }
 //   }
    for(int m = 0; m < xmarkerCount; m++){
-      xpositions.Push(ped.GetMarkerInfo(xmarkers[m])->position*100);
+      //xpositions.Push(ped.GetMarkerInfo(xmarkers[m])->position*100);
+      xbp.Push(int(ped.GetMarkerInfo(xmarkers[m])->position*100000000+0.5));
       xsnpName[m] = ped.markerNames[xmarkers[m]];
    }
 /*   if(analysisFlag || !notrimFlag)
@@ -1049,7 +1051,8 @@ void KingEngine::BuildShortBinary()
          }
 //   }
    for(int m = 0; m < ymarkerCount; m++){
-      ypositions.Push(ped.GetMarkerInfo(ymarkers[m])->position*100);
+      //ypositions.Push(ped.GetMarkerInfo(ymarkers[m])->position*100);
+      ybp.Push(int(ped.GetMarkerInfo(ymarkers[m])->position*100000000+0.5));
       ysnpName[m] = ped.markerNames[ymarkers[m]];
    }
 /*   if(analysisFlag || !notrimFlag)
@@ -1072,7 +1075,8 @@ void KingEngine::BuildShortBinary()
 //   }
 
    for(int m = 0; m < mtmarkerCount; m++){
-      mtpositions.Push(ped.GetMarkerInfo(mtmarkers[m])->position*100);
+      //mtpositions.Push(ped.GetMarkerInfo(mtmarkers[m])->position*100);
+      mtbp.Push(int(ped.GetMarkerInfo(mtmarkers[m])->position*100000000+0.5));
       mtsnpName[m] = ped.markerNames[mtmarkers[m]];
    }
 /*   if(analysisFlag || !notrimFlag)
@@ -1332,7 +1336,7 @@ void KingEngine::WriteKingBinary(const char *pedfile)
 
 void KingEngine::DumpBinary(const char *pedfile)
 {
-   bool markerinfo = (positions.Length()||xpositions.Length())? true: false;  // update later
+   bool markerinfo = (bp.Length()||xbp.Length())? true: false;  // update later
 
    printf("Writing to file %s starts at %s",
       (const char*)pedfile, currentTime());
@@ -1412,20 +1416,18 @@ void KingEngine::DumpBinary(const char *pedfile)
       // line: KING_CHROMOSOME
       fprintf(fp, "M KING_CHROMOSOME");
       for(int m = 0; m < markerCount; m++)
-//         fprintf(fp, " %d", chromosomes[bigdataIdx[maxcount-m]]);
          fprintf(fp, " %d", chromosomes[m]);
       fprintf(fp, "\n");
       // line: KING_POSITION
       fprintf(fp, "M KING_POSITION");
       for(int m = 0; m < markerCount; m++)
-//         fprintf(fp, " %.6lf", positions[bigdataIdx[maxcount-m]]);
-         fprintf(fp, " %.6lf", positions[m]);
+         fprintf(fp, " %.6lf", bp[m]*0.000001);
         for(int m = 0; m < xmarkerCount; m++)
-         fprintf(fp, " %.6lf", xpositions[m]);
+         fprintf(fp, " %.6lf", xbp[m]*0.000001);
       for(int m = 0; m < ymarkerCount; m++)
-         fprintf(fp, " %.6lf", ypositions[m]);
+         fprintf(fp, " %.6lf", ybp[m]*0.000001);
       for(int m = 0; m < mtmarkerCount; m++)
-         fprintf(fp, " %.6lf", mtpositions[m]);
+         fprintf(fp, " %.6lf", mtbp[m]*0.000001);
       fprintf(fp, "\n");
    }
    // line: FID

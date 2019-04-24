@@ -43,7 +43,8 @@ class Engine:public KingEngine{
       double EmpP(double, Vector &);
       void ComputeDistanceMatrix(Matrix & Dist);
       void ComputeDistanceMatrix64Bit(Matrix & Dist);
-      double ComputeAUC(Vector & risks, IntArray & diseaseStatus, int printFlag, int TOTALCUT);
+      void ComputeInnerProduct64Bit(IntArray & subset, IntArray * counts); 
+      double ComputeAUC(Vector & risks, IntArray & diseaseStatus, int printFlag);
 
    public:
       Engine(Pedigree &ped);
@@ -58,6 +59,7 @@ class Engine:public KingEngine{
       int mincons;
       bool homogeneity;
       bool adjustFamily;
+      bool rplotFlag;
       void ComputeRunLength();
       void ComputeRunLengthInOneTrio(String &);
       void internalKING(int);
@@ -66,9 +68,8 @@ class Engine:public KingEngine{
       void ROH();
       void ROHOnly(IntArray & idList, int segment, IntArray & rohStorage, IntArray & rohIndex, bool LengthOnly=false);
       void PopulationROH();
-      void ComputeIBD2Segment();
-      void ComputeIBD2Segment64Bit();
-      void ComputeIBDSegment64Bit();
+      void ComputeIBDSegment64Bit(IntArray & subsetRef, IntArray & subsetProj);
+      void ComputeIBDSegment64BitWithFilter(IntArray & subsetRef, IntArray & subsetProj);
 
       void adjustPC(int pcCount);
 
@@ -77,15 +78,13 @@ class Engine:public KingEngine{
       void ComputeBigDataSecondDegree();
       void ComputeBigDataDistant();
       void ComputeBigDataPO();
-      void ComputeBigDataKinship();
       void IntegratedRelationshipInference();
       void ComputeBigDataKinshipAdjustPC();
 
       int ScreenDuplicates(IntArray & rpList);
-      int ScreenDuplicates64Bit(IntArray & rpList);
-      long int ScreenCloseRelatives(IntArray & rpList);
-      void ScreenCloseRelativesInSubset(IntArray & rpList);
-      void ScreenCloseRelativesInSubset64Bit(IntArray & rpList);
+      long long int ScreenDuplicates64Bit(IntArray rpList[]);
+      void ScreenCloseRelativesInSubset(IntArray rpList[]);
+      void ScreenCloseRelativesInSubset64Bit(IntArray rpList[]);
 
 //      void ComputeLongHomoKinship64Bit();
       void ComputeShortFastHomoKinship();
@@ -95,20 +94,24 @@ class Engine:public KingEngine{
       void ComputeShortSimpleIBS();
       void ComputeShortRobustKinship();
       void ComputeLongRobustKinship64Bit();
-      void ComputeLongRobustKinship64BitWithFilter(IntArray & ids, bool WriteFlag=true);
+      void ComputeLongRobustKinship64BitWithFilter(IntArray ids[], bool WriteFlag=true);
       void ComputeShortRobustKinshipAdjustPC();
       void ComputeShortRobustXKinship();
       void ComputeShortSibIBS();
       void ComputeShortDuplicate();
+
+      void DuplicateInSubset64Bit(IntArray & pairList, IntArray & HetHetCounts,
+         IntArray & DiffHomCounts, IntArray & HomHomCounts, IntArray & notMissingHetCounts);
       void KinshipInSubset(IntArray & pairList, IntArray & HetHetCounts,
-         IntArray & IBS0Counts, IntArray & het1Counts, IntArray & het2Counts, IntArray & HomHomCounts);
+         IntArray & IBS0Counts, IntArray & het1Counts, IntArray & het2Counts, IntArray & HomHomCounts, IntArray & IBS1Counts);
       void KinshipInSubset64Bit(IntArray & pairList, IntArray & HetHetCounts,
          IntArray & IBS0Counts, IntArray & het1Counts, IntArray & het2Counts, IntArray & HomHomCounts, IntArray & IBS1Counts);
       void IBD2SegInSubset(IntArray & pairList, Vector & ibd2props, Vector & maxLengths);
       void IBD2SegInSubset64Bit(IntArray & pairList, Vector & ibd2props, Vector & maxLengths);
-      void IBDSegInSubset64Bit(IntArray & pairList, Vector & ibdprops, Vector & maxLengths, Vector & ibd2props, Vector & maxLengths2);
-      void IBDSegOnly(IntArray & pairList, int segment, IntArray & ibdsegStorage1, IntArray & ibdsegIndex1, IntArray & ibdsegStorage2, IntArray & ibdsegIndex2, bool LengthOnly=false, double MINSEGLENGTH=2.5, int MINCCOUNT=200);
+      void IBDSegInSubset64Bit(IntArray & pairList, Vector & ibdprops, Vector & maxLengths, Vector & ibd2props, Vector & maxLengths2, IntArray *ibd1segs=NULL, IntArray *ibd2segs=NULL);
+      void IBDSegOnly(IntArray & pairList, int segment, IntArray & ibdsegStorage1, IntArray & ibdsegIndex1, IntArray & ibdsegStorage2, IntArray & ibdsegIndex2, bool LengthOnly=false, int MINSEGLENGTH=2500000, int MINCCOUNT=200);
       void NPL();
+      void HEreg();
       void IBDmapping(int nperm);
       void HomozygosityMapping();
       void HomozygosityMappingMH(const char *popName="Reference");
@@ -130,12 +133,13 @@ class Engine:public KingEngine{
       IntArray chrSeg;
       double totalLength;
       String segmessage;
-
+      
 // Population Structure Analysis
       void pca(int every);
       void pca_family(int every);
       void pca_family_check(int every);
       void pca_projection(int every);
+      void mds_projection();
       void mds();
       void mds_moving();
       void mds_family();
@@ -146,24 +150,21 @@ class Engine:public KingEngine{
       void OneWindowProjection(int mv_chr, double mv_start, double mv_stop, Vector & ancestry);
       void SlidingWindows();
       Matrix localAncestry;
-
-//      void mds_family_check();
       bool semifamilyFlag;
-//      bool clusterFlag;
       bool projectFlag;
       bool unrelatedExtraction;
 
 // Pedigree Reconstruction
       char specialChar;
-      void rebuild();
+      bool rebuild(int id_added=1);
       int BuildOneFamily(int f, IntArray, double, String &);
       int ClusterFamily(int pedrebuildFlag, int degree);
       void rebuild_semifamily();
       void IBDLength_3Pairs(IntArray &trio, int order, Vector &lengths);
       void IBDLength_trioMI(IntArray &trio, int order, Vector &lengths);
-
+      bool SplitPedigree();
+      
 // QC
-//      IntArray Ltrio;
       void MakeFamilyForMI(void);
       void countGenotype(void);
       void OutputIndividualInfo(void);
@@ -183,25 +184,8 @@ class Engine:public KingEngine{
       void CallRate_ySNP(double rateFilter, IntArray & removeList, bool lessthanFlag=true);
       void CallRate_Sample(double rateFilter, IntArray & removeList);
       void autoQC(double samplecallrate, double snpcallrate/*, double xHeterozygosity*/);
-      void plotGenderError(IntArray & plotx, Vector & ploty, IntArray & plotz, double xHeterozygosity, int gendererrorCount);
-      void plotRelationship();
-      void plotIBDSeg();
-      void plotIBD1vsIBD2(FILE *);
-      void plotIBD2();
-      void plotHetConcvsIBD2();
-      void plotPopStructure();
-      void plotAUCmapping();
-      void plotNPL();
-      void plotAncestry();
-      void plotIBDmapping();
-      void plotPopDist();
-      void plotROHmapping(const char *stratName);
-      void plotROHforQT();
-      void plotPopROH();
-
 // Tools
       int WriteFile;
-//      void WritePeking();
       void WriteMerlin();
       void WritePlink();
 
@@ -258,7 +242,6 @@ class Engine:public KingEngine{
       IntArray ID;
       double **UT;
       double **VR;
-      //Matrix D;
       double **D;
       double *varVR;
       void ReadSVD();
@@ -302,6 +285,9 @@ class Engine:public KingEngine{
       void AssocFamHistory();
       void IBDGRM();
       void AllIBDSegments();
+      void IBDMDS();
+      void IBDMDS_Internal(IntArray & subset, Vector & EigenValue, Matrix & EigenVector);
+      void IBDMDS_Projection();
 
       Matrix means;
       Vector variances, heritabilities;
@@ -311,8 +297,6 @@ class Engine:public KingEngine{
       int unrelatedFlag;
       bool effectFlag;
       bool CheckCovariates(Person & p);
-
-//      void PrintGeneticRiskScore(const char* weightfile);
       void PrintGeneticRiskScoreSNPMajor(const char* weightfile, bool noflipFlag=false);
       double prevalence;
 };

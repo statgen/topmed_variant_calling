@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
 // buildped.cpp
-// (c) 2010-2018 Wei-Min Chen
+// (c) 2010-2019 Wei-Min Chen
 //
 // This file is distributed as part of the KING source code package
 // and may not be redistributed in any form, without prior written
@@ -12,38 +12,1004 @@
 //
 // All computer programs have bugs. Use this file at your own risk.
 //
-// March 22, 2018
+// March 28, 2019
 
 #include <math.h>
 #include "analysis.h"
 #include "Kinship.h"
+#include "Intervals.h"
 #ifdef _OPENMP
   #include <omp.h>
 #endif
+
+bool Engine::SplitPedigree()
+{
+   Kinship kin;
+   IntArray queue, splitLength;
+   bool splitFlag = false;
+   bool pedigreeFlag = false;
+   String updateidsfile = prefix;
+   FILE *fp;
+   for(int f = 0; f < ped.familyCount; f++){
+      Family *pf = ped.families[f];
+      if(pf->count < 2) continue;
+      if(!pedigreeFlag){
+         updateidsfile.Add("splitped.txt");
+         fp = fopen((const char*)updateidsfile, "wt");
+         pedigreeFlag = true;
+      }
+      queue.Dimension(0);
+      splitLength.Dimension(0);
+      int p = 0;
+      kin.Setup(*pf);
+      for(int i = pf->first; i <= pf->last; i++){
+         int exist = queue.Find(i);
+         if(exist > -1) continue;
+         for(queue.Push(i); p < queue.Length(); p++)
+            for(int j = pf->first; j <= pf->last; j++)
+               if(j!=queue[p] && queue.Find(j)==-1 && kin(ped[queue[p]], ped[j]) > 0.0000001)
+                  queue.Push(j);
+         splitLength.Push(queue.Length());
+      }
+      int splitCount = splitLength.Length();
+      if(splitCount > 1){   // split family f
+         for(int s = 0; s < splitCount; s++)
+            for(int i = (s? splitLength[s-1]: 0); i < splitLength[s]; i++){
+               int k = queue[i];
+               fprintf(fp, "%s %s %s_S%d %s %s %s %d %d %d\n",
+                  (const char*)pf->famid, (const char*)ped[k].pid,
+                  (const char*)pf->famid, s+1, (const char*)ped[k].pid,
+                  (const char*)ped[k].fatid, (const char*)ped[k].motid,
+                  ped[k].sex, ped[k].affections[0], ped[k].ngeno>0? 0: 1);
+            }
+         splitFlag = true;
+      }else for(int i = pf->first; i <= pf->last; i++)
+            fprintf(fp, "%s %s %s %s %s %s %d %d %d\n",
+               (const char*)pf->famid, (const char*)ped[i].pid,
+               (const char*)pf->famid, (const char*)ped[i].pid,
+               (const char*)ped[i].fatid, (const char*)ped[i].motid,
+               ped[i].sex, ped.affectionCount? ped[i].affections[0]: 0, ped[i].ngeno>0? 0: 1);
+   }
+   if(pedigreeFlag) fclose(fp);
+   bool valid = true;
+//   if(splitFlag) printf("  Pedigrees are split into connected ones as shown in %s\n", (const char*)updateidsfile);
+//   else if(pedigreeFlag) printf("  Pedigrees are reformated for plotting as shown in %s\n", (const char*)updateidsfile);
+//   else {printf("  No pedigrees found in the dataset.\n"); valid = false;}
+   if(!pedigreeFlag){printf("  No pedigrees found in the dataset.\n"); valid = false;}
+   return valid;
+}
+
+int Engine::BuildOneFamily(int f, IntArray chrSeg, double totalLength, String & message)
+{
+   int idfCount = id[f].Length();
+   if(idfCount < 2) return 0;
+   L0.Dimension(0);
+   Lfs.Dimension(0);
+   Lpo.Dimension(0);
+   L2.Dimension(0);
+   Family *pf = ped.families[f];
+   IntArray valid(pf->count); valid.Set(1);
+   IntArray *poConnection = new IntArray[pf->count];
+   IntArray *d2Connection = new IntArray[pf->count];
+   IntArray *d123Connection = new IntArray[pf->count];
+   for(int i = 0; i < pf->count; i++){
+      poConnection[i].Dimension(0);
+      d2Connection[i].Dimension(0);
+      d123Connection[i].Dimension(0);
+   }
+   IntArray pairs(0);
+   Matrix relationship(pf->count, pf->count); relationship.Zero();
+   IntArray *pairIndex;
+   Kinship kin; kin.Setup(*ped.families[f]);
+   for(int i = 0; i < idfCount; i++)
+      for(int j = i+1; j < idfCount; j++){
+         if(kin(ped[id[f][i]], ped[id[f][j]]) > 0)
+            relationship[id[f][i]-pf->first][id[f][j]-pf->first] =
+            relationship[id[f][j]-pf->first][id[f][i]-pf->first] = kin(ped[id[f][i]], ped[id[f][j]]);
+         pairs.Push(geno[id[f][i]]); pairs.Push(geno[id[f][j]]);
+      }
+   int pairCount = pairs.Length()/2;
+   if(pairCount==0) return 0;
+   IntArray HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts, IBSCounts;
+   //****************************Compute kinship coefficient*****************************
+   if(Bit64==64)
+      KinshipInSubset64Bit(pairs, HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts, IBSCounts);
+   else
+      KinshipInSubset(pairs, HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts, IBSCounts);
+   //****************************Compute kinship coefficient*****************************
+   Vector ibdprops, maxLengths, ibd2props, maxLengths2;
+   IntArray *ibd1segs = new IntArray [pairCount];
+   bool IBDvalidFlag = chrSeg.Length()>0;
+   if(IBDvalidFlag && Bit64==64){
+      IBDSegInSubset64Bit(pairs, ibdprops, maxLengths, ibd2props, maxLengths2, ibd1segs);
+      pairIndex = new IntArray[pf->count];
+      for(int i = 0; i < pf->count; i++){
+         pairIndex[i].Dimension(pf->count);
+         pairIndex[i].Set(-1);
+      }
+   }
+   int traverse[2];
+   for(int p = 0; p < pairCount; p++){
+      if(!het1Counts[p] && !het2Counts[p] && !HetHetCounts[p]) continue;
+      for(int s = 0; s < 2; s++)
+         traverse[s] = phenoid[pairs[p*2+s]] - pf->first;
+      double CHet = HetHetCounts[p] * 1.0 / (HetHetCounts[p]+het1Counts[p]+het2Counts[p]);
+      if(IBDvalidFlag && Bit64==64){
+         double ibdprop = ibdprops[p];
+         double ibd2prop = ibd2props[p];
+         double pi = ibd2prop + ibdprop * 0.5;
+         pairIndex[traverse[0]][traverse[1]] = pairIndex[traverse[1]][traverse[0]] = p;
+         if(CHet<0.8){
+            if(pi > 0.3535534){  // 1st-degree
+               if(ibdprop + ibd2prop > 0.96 || (ibdprop + ibd2prop > 0.9 && ibd2prop <= 0.08)){
+                  if(relationship[traverse[0]][traverse[1]] < 0.177){
+                     Lpo.Push(traverse[0]); Lpo.Push(traverse[1]);
+                  }
+               }else if(((ibd2prop > 0.15 && ibd2prop < 0.5) || (pi > 0.4 && pi < 0.8)) && (relationship[traverse[0]][traverse[1]] < 0.177)){
+                  Lfs.Push(traverse[0]); Lfs.Push(traverse[1]);
+               }
+            }else if(pi > 0.2 && ibd2prop < 0.08){  // very strict 2nd-degree
+               if(relationship[traverse[0]][traverse[1]] < 0.08){
+                  L2.Push(traverse[0]); L2.Push(traverse[1]);
+               }
+               d2Connection[traverse[0]].Push(traverse[1]);
+               d2Connection[traverse[1]].Push(traverse[0]);
+            }
+            if(pi > 0.04419417){// closer than 4th-degree
+               d123Connection[traverse[0]].Push(traverse[1]);
+               d123Connection[traverse[1]].Push(traverse[0]);
+            }
+         }else{ // Duplicate
+            L0.Push(traverse[0]); L0.Push(traverse[1]);
+         }
+         if(relationship[traverse[0]][traverse[1]] < 0.0442)
+            relationship[traverse[0]][traverse[1]] = relationship[traverse[1]][traverse[0]] = pi * 0.5;
+         else if(relationship[traverse[0]][traverse[1]] > 0.177 && pi * 0.5 < 0.177){
+            printf("Warning: (%s %s) does not look like 1st-degree relatives.\n",
+               (const char*)ped[traverse[0]+pf->first].pid,
+               (const char*)ped[traverse[1]+pf->first].pid);
+            printf("please fix within-family errors first before pedigree recontruction.\n");
+            relationship[traverse[0]][traverse[1]] = relationship[traverse[1]][traverse[0]] = pi * 0.5;
+         }
+      }else{   // IBDseg unavailable
+         double kinship = (HetHetCounts[p] - IBS0Counts[p]*2.0) / (HetHetCounts[p]*2+het1Counts[p]+het2Counts[p]);
+         if(relationship[traverse[0]][traverse[1]] > 0.0221) continue;
+         relationship[traverse[0]][traverse[1]] = relationship[traverse[1]][traverse[0]] = kinship;
+         if(kinship <= 0.0221) continue;
+         if(markerCount < 6000 && kinship <= 0.088388) continue;
+         int deg = int(-log(kinship)/0.6931472-0.5);
+         if(deg == 0) {L0.Push(traverse[0]); L0.Push(traverse[1]);}
+         else if(deg == 1 && kinship > 0.18){
+            int IBS0Count = IBS0Counts[p];
+            int notMissingCount = het1Counts[p] + het2Counts[p] + HomHomCounts[p] + HetHetCounts[p];
+            if(IBS0Count > errorrateCutoff * notMissingCount) {
+               Lfs.Push(traverse[0]); Lfs.Push(traverse[1]);
+            }else{   // PO
+               Lpo.Push(traverse[0]); Lpo.Push(traverse[1]);
+            }
+         }else if(deg == 2){
+            L2.Push(traverse[0]); L2.Push(traverse[1]);
+            d2Connection[traverse[0]].Push(traverse[1]);
+            d2Connection[traverse[1]].Push(traverse[0]);
+            d123Connection[traverse[0]].Push(traverse[1]);
+            d123Connection[traverse[1]].Push(traverse[0]);
+         }
+      }
+   }  // end of pairs
+   int L0Count = L0.Length()/2;
+   int fsCount = Lfs.Length()/2;
+   int poCount = Lpo.Length()/2;
+   if(!L0Count && !poCount && !fsCount) return 0;
+   char buffer[256];
+   message.Clear();
+   sprintf(buffer, "Family %s:\n", (const char*)pf->famid);
+   message += buffer;
+   int smaller, larger, ids[2];
+
+   if(L0Count){   // If dup exists, remove one of them
+      IntArray childCount(pf->count); childCount.Zero();
+      for(int i = pf->first; i <= pf->last; i++){
+         if(ped[i].father) childCount[ped[i].father->serial-pf->first] ++;
+         if(ped[i].mother) childCount[ped[i].mother->serial-pf->first] ++;
+      }
+      for(int j = 0; j < L0Count; j++){
+         for(int s = 0; s < 2; s++) ids[s] = L0[j*2+s];
+         if(!valid[ids[0]] || !valid[ids[1]]) continue;
+         if(childCount[ids[0]] < childCount[ids[1]]){
+            smaller = ids[0]; larger = ids[1];
+         }else if(childCount[ids[1]] < childCount[ids[0]]){
+            smaller = ids[1]; larger = ids[0];
+         }else if(ped[ids[0]+pf->first].sibCount < ped[ids[1]+pf->first].sibCount){
+            smaller = ids[0]; larger = ids[1];
+         }else if(ped[ids[1]+pf->first].sibCount < ped[ids[0]+pf->first].sibCount){
+            smaller = ids[1]; larger = ids[0];
+         }else{smaller = ids[0]; larger = ids[1];}
+         valid[smaller] = 0;  // Dup with smaller family size to be removed
+         Person *plarger = &ped[larger+pf->first];
+         Person *psmaller = &ped[smaller+pf->first];
+         sprintf(buffer, "  Duplicate %s (of %s) is removed.\n",
+            (const char*)psmaller->pid, (const char*)plarger->pid);
+         message += buffer;
+         if(childCount[smaller])// All smaller's children now have larger as parent
+            for(int i = pf->first; i <= pf->last; i++){
+               if(valid[i-pf->first] && psmaller->sex == 1 && ped[i].father && ped[i].father->serial==smaller+pf->first){
+                  ped[i].father = &ped[larger+pf->first];
+                  ped[i].fatid = plarger->pid;
+               }else if(valid[i-pf->first] && psmaller->sex == 2 && ped[i].mother && ped[i].mother->serial==smaller+pf->first){
+                  ped[i].mother = &ped[larger+pf->first];
+                  ped[i].motid = plarger->pid;
+               }
+            }
+         if(!plarger->father && !plarger->mother && psmaller->father && psmaller->mother){
+            plarger->father = psmaller->father;
+            plarger->fatid = psmaller->fatid;
+            plarger->mother = psmaller->mother;
+            plarger->motid = psmaller->motid;
+         }
+      }  // End of j for L0 loop
+   }  // End of if L0 not empty
+
+   int ss[2], pa[2], parentid[2][2];
+   Person *fss[2];
+   bool parentvalid[2][2];
+   int newparent = 0;
+   String tempS;
+   // Reconstruct FS
+   IntArray parents[2];
+   for(int s = 0; s < 2; s++) parents[s].Dimension(0);
+   IntArray sibship[10000];
+   int sibshipCount = 0;   // Hopefully sibshipCount is never > 10000
+   for(int i = pf->first; i <= pf->last; i++)
+      if(ped[i].sibCount > 1 && ped[i].sibs[0]->serial == i){
+         sibship[sibshipCount].Dimension(0);
+         for(int s = 0; s < ped[i].sibCount; s++)
+            if(valid[ped[i].sibs[s]->serial-pf->first])
+               sibship[sibshipCount].Push(ped[i].sibs[s]->serial-pf->first);
+         ped[i].sibCount = sibship[sibshipCount].Length();
+         if(ped[i].sibCount < 2) continue;
+         parents[0].Push(ped[i].father->serial-pf->first);
+         parents[1].Push(ped[i].mother->serial-pf->first);
+         sibshipCount++;
+      }
+   for(int j = 0; j < fsCount; j++){
+      for(int s = 0; s < 2; s++) ids[s] = Lfs[j*2+s];
+      if(valid[ids[0]] == 0 || valid[ids[1]] == 0) continue;
+      for(int s = 0; s < 2; s++) {
+         ss[s] = -1;
+         for(int k = 0; k < sibshipCount; k++)
+            if(sibship[k].Find(ids[s]) > -1) ss[s] = k;
+         pa[s] = -1;
+         fss[s] = &ped[ids[s] + pf->first];
+         parentvalid[s][0] = (fss[s]->father && valid[fss[s]->father->serial-pf->first]);
+         parentvalid[s][1] = (fss[s]->mother && valid[fss[s]->mother->serial-pf->first]);
+         parentid[s][0] = fss[s]->father? fss[s]->father->serial: -1;
+         parentid[s][1] = fss[s]->mother? fss[s]->mother->serial: -1;
+      }
+      for(int p = 0; p < 2; p++)// get ID for parents
+         if(parentvalid[0][p] && parentvalid[1][p]){
+            if((p==0 && fss[0]->father->ngeno > fss[1]->father->ngeno) ||
+               (p==1 && fss[0]->mother->ngeno > fss[1]->mother->ngeno))
+               pa[p] = parentid[0][p];
+            else
+               pa[p] = parentid[1][p];
+         }else if(parentvalid[0][p] || parentvalid[1][p])
+            pa[p] = parentid[parentvalid[0][p]? 0: 1][p];
+      if(ss[0] > -1 && ss[1] > -1){ // RULE FS2
+         if(ss[0] == ss[1]) continue;  // pass if belong to the same sibship
+         else if(ss[0] < ss[1]) {smaller=ss[0]; larger=ss[1];}
+         else{smaller=ss[1]; larger=ss[0];}  // combine two sibships
+         sprintf(buffer, "  RULE FS2: Sibship (%s", (const char*)ped[sibship[ss[0]][0]+pf->first].pid);
+         message += buffer;
+         for(int s = 1; s < sibship[ss[0]].Length(); s++){
+            sprintf(buffer, " %s", (const char*)ped[sibship[ss[0]][s]+pf->first].pid);
+            message += buffer;
+         }
+         sprintf(buffer, ") and sibship (%s", (const char*)ped[sibship[ss[1]][0]+pf->first].pid);
+         message += buffer;
+         for(int s = 1; s < sibship[ss[1]].Length(); s++){
+            sprintf(buffer, " %s", (const char*)ped[sibship[ss[1]][s]+pf->first].pid);
+            message += buffer;
+         }
+         sprintf(buffer, ") are combined\n");
+         message += buffer;
+         sibship[smaller].Stack(sibship[larger]);
+         for(int s = 0; s < 2; s++)
+            if(pa[s] > -1) parents[smaller] = pa[s] - pf->first;
+         if(larger < sibshipCount-1){
+            sibship[larger] = sibship[sibshipCount-1];
+            for(int s = 0; s < 2; s++)
+               parents[s][larger] = parents[s][sibshipCount-1];
+         }
+         sibshipCount--;
+         parents[0].Delete(sibshipCount);
+         parents[1].Delete(sibshipCount);
+      }else if(ss[0] == -1 && ss[1] == -1){  // RULE FS0
+         sibship[sibshipCount].Dimension(0);
+         for(int s = 0; s < 2; s++)
+            sibship[sibshipCount].Push(ids[s]);
+         sibshipCount++;
+         sprintf(buffer, "  RULE FS0: Sibship (%s", (const char*)ped[sibship[sibshipCount-1][0]+pf->first].pid);
+         message += buffer;
+         for(int s = 1; s < sibship[sibshipCount-1].Length(); s++){
+            sprintf(buffer, " %s", (const char*)ped[sibship[sibshipCount-1][s]+pf->first].pid);
+            message += buffer;
+         }
+         sprintf(buffer, ")'s parents are (");
+         message += buffer;
+         for(int s = 0; s < 2; s++)
+            if(pa[s] > -1){
+               parents[s].Push(pa[s] - pf->first);
+               sprintf(buffer, s==0?"%s":" %s)\n", (const char*)ped[pa[s]].pid);
+               message += buffer;
+            }else{
+               parents[s].Push(missingBase + 1000000 + newparent);
+               inclusionList[0].Push(ped.families[f]->famid);
+               tempS = missingBase + newparent;
+               sprintf(buffer, s==0?"%s":" %s)\n", (const char*)tempS);
+               message += buffer;
+               newparent++;
+               inclusionList[1].Push(tempS);
+               tempS = s+1;
+               inclusionList[2].Push(tempS);
+               inclusionList[3].Push("");
+               inclusionList[4].Push("");
+            }
+      }else{   // RULE FS1
+         int ls = ss[0] > -1? 0: 1; // 1-ls join ls's sibship
+         sibship[ss[ls]].Push(ids[1-ls]);
+         for(int s = 0; s < 2; s++)
+            if(pa[s] > -1) parents[ls] = pa[s] - pf->first;
+         sprintf(buffer, "  RULE FS1: %s joins in sibship (%s",
+            (const char*)fss[1-ls]->pid, (const char*)ped[sibship[ss[ls]][0]+pf->first].pid);
+         message += buffer;
+         for(int s = 1; s < sibship[ss[ls]].Length()-1; s++){
+            sprintf(buffer, " %s", (const char*)ped[sibship[ss[ls]][s]+pf->first].pid);
+            message += buffer;
+         }
+         sprintf(buffer, ")\n");
+         message += buffer;
+      }  // End of if rules
+   }  // End of j for FS loop
+   for(int j = 0; j < sibshipCount; j++){// KING -> newparent
+      if(parents[0][j] < missingBase+1000000 && parents[1][j] < missingBase+1000000 && parents[0][j] > -1 && parents[1][j] > -1)
+         for(int s = 0; s < 2; s++)
+            if(ped[parents[s][j]+pf->first].pid.SubStr(0, 4)=="KING" && ped[parents[s][j]+pf->first].ngeno==0){
+               ped[parents[s][j]+pf->first].pid = missingBase + newparent;
+               newparent ++;
+            }
+      for(int k = 0; k < sibship[j].Length(); k++){
+         Person *pj = &ped[sibship[j][k]+pf->first];
+         if(parents[0][j] < missingBase+1000000 && parents[1][j] < missingBase+1000000 && parents[0][j] > -1 && parents[1][j] > -1){
+            pj->father = &ped[parents[0][j]+pf->first];
+            pj->mother = &ped[parents[1][j]+pf->first];
+            pj->fatid = ped[parents[0][j]+pf->first].pid;
+            pj->motid = ped[parents[1][j]+pf->first].pid;
+         }else{
+            pj->fatid = parents[0][j]-1000000;
+            pj->motid = parents[1][j]-1000000;
+         }
+      }  // End of k for sibs loop
+   }  // End of j for sibship loop
+
+   // Reconstruct parent-offspring
+   Person *pos[2];
+   int parent, offspring;
+   IntArray ibd1seg, tempArray, tempArray2, relatives;
+   StringArray missing_id(0);
+   for(int j = 0; j < poCount; j++){
+      for(int s = 0; s < 2; s++) {
+         ids[s] = Lpo[j*2+s];
+         pos[s] = &ped[ids[s]+pf->first];
+         ss[s] = -1;
+         for(int k = 0; k < sibshipCount; k++)
+            if(sibship[k].Find(ids[s]) > -1) ss[s] = k;
+      }
+      if(valid[ids[0]] == 0 || valid[ids[1]] == 0) continue;
+      if(pos[0]->fatid == pos[1]->pid || pos[0]->motid == pos[1]->pid ||
+         pos[1]->fatid == pos[0]->pid || pos[1]->motid == pos[0]->pid) continue;
+      sprintf(buffer, "  Reconstruct parent-offspring pair (%s, %s)...\n",
+         (const char*)pos[0]->pid, (const char*)pos[1]->pid);
+      message += buffer;
+      parent = offspring = -1;
+      int sibshiplist = -1;
+      String rule("");
+      if(ss[0] == -1 && ss[1] == -1){ // singletons
+         for(int s = 0; s < 2; s++){
+            parentvalid[s][0] = (pos[s]->father && valid[pos[s]->father->serial-pf->first] && pos[s]->father->ngeno >= MINSNPCOUNT);
+            parentvalid[s][1] = (pos[s]->mother && valid[pos[s]->mother->serial-pf->first] && pos[s]->mother->ngeno >= MINSNPCOUNT);
+         }
+         if(parentvalid[0][0] || parentvalid[0][1] || parentvalid[1][0] || parentvalid[1][1]){
+            for(int s = 0; s < 2; s++) // s: one or the other of the PO pair
+               for(int t = 0; t < 2; t++){   // t: one's parent
+                  if(!parentvalid[s][t]) continue;
+                  if(pos[1-s]->sex == t+1){  // The other has the same sex as the parent
+                     parent = ids[s];  // then the other cannot be the parent
+                     offspring = ids[1-s];
+                     rule = "PO.PA.NA";
+                  }else{   // the other has differnt or unknown sex
+                     int pa_traverse = (t?pos[s]->mother:pos[s]->father)->serial - pf->first;
+                     if(relationship[ids[1-s]][pa_traverse] < 0.0625){   // The other is unrelated to the parent
+                        parent = ids[1-s];   // then the other is a parent
+                        offspring = ids[s];
+                        rule="PO.PA.UN";
+                     }else if(relationship[ids[1-s]][pa_traverse] > 0.0884){ // The other is D2 to the parent
+                        parent = ids[s];  // then the other is an offspring
+                        offspring = ids[1-s];
+                        rule="PO.PA.D2";
+                     }
+                  }
+               }  // End of loop s,t for pair & its parent
+         }else{   // none of the PO has known parents
+            for(int s = 0; s < 2; s++) // RULE PO.D2
+               for(int k = 0; k < d123Connection[ids[s]].Length(); k++)
+                  if(IBDvalidFlag && Bit64==64){
+                     int relative = d123Connection[ids[s]][k];
+                     if(relative == ids[1-s]) continue;
+                     tempArray = ibd1segs[pairIndex[ids[s]][relative]]; // RO
+                     double tempLength = SegmentLength(tempArray, bp);
+                     double joinLength = JoinLength(ibd1segs[pairIndex[ids[1-s]][relative]], tempArray, bp);   // RP & RO
+                     if(joinLength < tempLength * 0.125){ // Would be 0.5 or 1 if related
+                        parent = ids[1-s]; // One's relative unrelated to the other
+                        offspring = ids[s];  // then the other is the parent
+                        rule="PO.REL.UN";
+                        sprintf(buffer, "    (P=%s, O=%s, R=%s): PR|OR = %.1lfMb / %.1lfMb\n",
+                           (const char*)ped[parent+pf->first].pid,
+                           (const char*)ped[offspring+pf->first].pid,
+                           (const char*)ped[relative+pf->first].pid,
+                           joinLength*0.000001, tempLength*0.000001);
+                        message += buffer;
+                        if(relationship[ids[s]][relative] > 0.177){  // relative is the other parent
+                           if(ped[parent+pf->first].sex == 1){// the other parent is mother
+                              ped[offspring+pf->first].motid = ped[relative+pf->first].pid;
+                              ped[offspring+pf->first].mother = &ped[relative+pf->first];
+                              sprintf(buffer, "    %s is now mother of %s\n",
+                                 (const char*)ped[relative+pf->first].pid, (const char*)ped[offspring+pf->first].pid);
+                           }else{   // the other parent is father
+                              ped[offspring+pf->first].fatid = ped[relative+pf->first].pid;
+                              ped[offspring+pf->first].father = &ped[relative+pf->first];
+                              sprintf(buffer, "    %s is now father of %s\n",
+                                 (const char*)ped[relative+pf->first].pid, (const char*)ped[offspring+pf->first].pid);
+                           }
+                           message += buffer;
+                        }
+                        break;
+                     }
+                  }else if(relationship[ids[1-s]][d2Connection[ids[s]][k]] < 0.03125){// integrated inference unavailable
+                     parent = ids[1-s]; // One's relative unrelated to the other
+                     offspring = ids[s];  // then the other is the parent
+                     rule="PO.D2.UN";
+                  }
+            if(parent==-1 && IBDvalidFlag && Bit64==64){ // Apply rule PO.RELS.UN
+               for(int s = 0; s < 2; s++){
+                  relatives.Dimension(0);
+                  for(int k = 0; k < d123Connection[ids[s]].Length(); k++){ // RULE PO.D2
+                     int relative = d123Connection[ids[s]][k];
+                     if(relative == ids[1-s]) continue;
+                     tempArray = ibd1segs[pairIndex[ids[1-s]][relative]];  // OR
+                     double tempLength = SegmentLength(tempArray, bp);   // OR length in Mb
+                     if(tempLength > 10000000){  // OR Length > 10Mb
+                        double joinLength = JoinLength(ibd1segs[pairIndex[ids[s]][relative]], tempArray, bp);
+                        if(joinLength > tempLength * 0.8 &&  // ids[s] is the parent
+                        joinLength > SegmentLength(ibd1segs[pairIndex[ids[s]][relative]], bp) * 0.125)  // not Unrelated
+                           relatives.Push(relative);
+                     }
+                  }
+                  int relativeCount = relatives.Length();
+                  if(relativeCount < 2) continue;
+                  for(int k1 = 0; k1 < relativeCount; k1++){
+                     int relative = relatives[k1];
+                     tempArray = ibd1segs[pairIndex[ids[s]][relative]]; // PR1
+                     for(int k2 = k1+1; k2 < relativeCount; k2++){
+                        int relative2 = relatives[k2];
+                        double joinRatio = RoRP(tempArray,
+                           ibd1segs[pairIndex[ids[s]][relative2]],
+                           ibd1segs[pairIndex[relative][relative2]], bp);
+                        if(joinRatio < 0.125 && joinRatio >= 0){   // R1 R2 unrelated
+                           parent = ids[s];
+                           offspring = ids[1-s];
+                           rule="PO.RELS.UN";
+                           sprintf(buffer, "    (P=%s, O=%s, R1=%s, R2=%s): R1R2 relatedness = %.2G\n",
+                              (const char*)ped[parent+pf->first].pid,
+                              (const char*)ped[offspring+pf->first].pid,
+                              (const char*)ped[relative+pf->first].pid,
+                              (const char*)ped[relative2+pf->first].pid,
+                              joinRatio);
+                           message += buffer;
+                        }
+                     }  // End of k2 for the k2-th relative
+                  }  // End of k1 for the k1-th relative
+               }  // End of s for either of the pair order
+            }  // End of if condition for PO.RELS.UN
+            if(!(IBDvalidFlag && Bit64==64) && offspring>-1){
+               int len = offspring>-1? poConnection[offspring].Length():0;
+               int parentindex = -1;
+               for(int i = 0; i < len; i++)
+                  if(relationship[parent][poConnection[offspring][i]] < 0.03125){
+                     parentindex = i;
+                     break;
+                  }
+               if(parentindex > -1){
+                  int otherparent = poConnection[offspring][parentindex];
+                  if(ped[parent+pf->first].sex == 1){// the other parent is mother
+                     ped[offspring+pf->first].motid = ped[otherparent+pf->first].pid;
+                     ped[offspring+pf->first].mother = &ped[otherparent+pf->first];
+                     sprintf(buffer, "    %s is now mother of %s\n",
+                        (const char*)ped[otherparent+pf->first].pid, (const char*)ped[offspring+pf->first].pid);
+                  }else{   // the other parent is father
+                     ped[offspring+pf->first].fatid = ped[otherparent+pf->first].pid;
+                     ped[offspring+pf->first].father = &ped[otherparent+pf->first];
+                     sprintf(buffer, "    %s is now father of %s\n",
+                        (const char*)ped[otherparent+pf->first].pid, (const char*)ped[offspring+pf->first].pid);
+                  }
+                  message += buffer;
+               }
+            }
+            if(parent==-1){
+               if(cAge == -1 || pos[0]->covariates[cAge] == _NAN_ || pos[1]->covariates[cAge] == _NAN_){
+                  poConnection[ids[0]].Push(ids[1]);
+                  poConnection[ids[1]].Push(ids[0]);
+               }else{
+                  smaller = pos[0]->covariates[cAge] < pos[1]->covariates[cAge]? 0: 1;
+                  larger = 1-smaller;
+                  if(pos[larger]->covariates[cAge] > pos[smaller]->covariates[cAge]+10){
+                     parent = ids[larger];
+                     offspring = ids[smaller];
+                     sprintf(buffer, "  Age information is used\n");
+                     message += buffer;
+                  }else{// Whoever older is the parent if age known
+                     printf("    Warning: parent-offspring age difference < 10.\n");
+                     continue;
+                  }
+               }
+            }
+         }
+      }else if(ss[0]>-1 || ss[1]>-1){  // one or both have sibs
+         rule = "PO.S";
+         for(int s = 0; s < 2; s++){
+            if(ss[s] == -1) continue;  // now s has sibs
+            int r = sibship[ss[s]].Find(ids[s]);
+            if(relationship[ids[1-s]][sibship[ss[s]][r==0?1:0]] > 0.2){   // The other is a parent
+               parent = ids[1-s];
+               sibshiplist = ss[s];
+            }else{   // The other is second degree
+               parent = ids[s];
+               offspring = ids[1-s];
+            }
+            sprintf(buffer, "  %s's sibship is used to determine the parent/offspring\n",
+               (const char*)pos[s]->pid);
+            message += buffer;
+            break;
+         }
+      }
+      if(parent == -1) {   // parent/offspring order still unknown
+         if(cAge == -1 || pos[0]->covariates[cAge] == _NAN_ || pos[1]->covariates[cAge] == _NAN_) continue;
+         smaller = pos[0]->covariates[cAge] < pos[1]->covariates[cAge]? 0: 1;
+         larger = 1 - smaller;
+         if(pos[larger]->covariates[cAge] > pos[smaller]->covariates[cAge]+10){
+            parent = ids[larger]; // Whoever older is the parent if age known
+            offspring = ids[smaller];
+            sprintf(buffer, "  Age information is used\n");
+            message += buffer;
+         }else{
+            printf("    Warning: parent-offspring age difference < 10.\n");
+            continue;
+         }
+      }
+      int parentsex = ped[parent+pf->first].sex;
+      if(parentsex != 1 && parentsex != 2) continue;
+      String string_pa = parentsex==1? "father": "mother";
+      if(offspring > -1){
+         tempS = parentsex==1? ped[offspring+pf->first].fatid: ped[offspring+pf->first].motid;
+         if(tempS == "0")
+            sprintf(buffer, "  RULE %s: %s is now %s of %s\n",
+               (const char*)rule, (const char*)ped[parent+pf->first].pid,
+               (const char*)string_pa, (const char*)ped[offspring+pf->first].pid);
+         else
+            sprintf(buffer, "  RULE %s: %s is now %s of %s, replacing %s (%d genotypes)\n",
+               (const char*)rule, (const char*)ped[parent+pf->first].pid,
+               (const char*)string_pa, (const char*)ped[offspring+pf->first].pid, 
+               (const char*)tempS,
+               (parentsex == 1)? (ped[offspring+pf->first].father ?
+               ped[ped[offspring+pf->first].father->serial].ngeno: 0):
+               (ped[offspring+pf->first].mother? ped[ped[offspring+pf->first].mother->serial].ngeno: 0));
+         message += buffer;
+         if(parentsex==1){
+            ped[offspring+pf->first].fatid = ped[parent+pf->first].pid;
+            ped[offspring+pf->first].father = &ped[parent+pf->first];
+         }else{
+            ped[offspring+pf->first].motid = ped[parent+pf->first].pid;
+            ped[offspring+pf->first].mother = &ped[parent+pf->first];
+         }
+         if((parentsex==1 && ped[offspring+pf->first].motid == "0") ||
+            (parentsex==2 && ped[offspring+pf->first].fatid == "0")){
+               inclusionList[0].Push(ped.families[f]->famid);
+               tempS = missingBase + newparent;
+               if(parentsex==1){
+                  sprintf(buffer, "    %s is created as %s's mother.\n",
+                     (const char*)tempS, (const char*)ped[offspring+pf->first].pid);
+                  ped[offspring+pf->first].motid = tempS;
+               }else{
+                  sprintf(buffer, "    %s is created as %s's father.\n",
+                     (const char*)tempS, (const char*)ped[offspring+pf->first].pid);
+                  ped[offspring+pf->first].fatid = tempS;
+               }
+               message += buffer;
+               newparent++;
+               inclusionList[1].Push(tempS);
+               tempS = 3-parentsex;
+               inclusionList[2].Push(tempS);
+               inclusionList[3].Push("");
+               inclusionList[4].Push("");
+         }
+      }else{   // all sibs are offspring
+         tempS = (parentsex==1? ped[sibship[sibshiplist][0]+pf->first].fatid:
+            ped[sibship[sibshiplist][0]+pf->first].motid);
+         if(tempS == "0")
+            sprintf(buffer, "  RULE %s: %s is now %s of %s's sibship\n",
+            (const char*)rule, (const char*)ped[parent+pf->first].pid,
+            (const char*)string_pa, (const char*)ped[sibship[sibshiplist][0]+pf->first].pid);
+         else
+            sprintf(buffer, "  RULE %s: %s is now %s of %s's sibship, replacing %s (%d genotypes)\n",
+            (const char*)rule, (const char*)ped[parent+pf->first].pid, (const char*)string_pa,
+            (const char*)ped[sibship[sibshiplist][0]+pf->first].pid, (const char*)tempS,
+            (parentsex == 1)? (ped[sibship[sibshiplist][0]+pf->first].father ?
+               ped[ped[sibship[sibshiplist][0]+pf->first].father->serial].ngeno: 0):
+               (ped[sibship[sibshiplist][0]+pf->first].mother? ped[ped[sibship[sibshiplist][0]+pf->first].mother->serial].ngeno: 0));
+         message += buffer;
+         for(int k = 0; k < sibship[sibshiplist].Length(); k++)
+            if(parentsex==1){
+               ped[sibship[sibshiplist][k]+pf->first].fatid = ped[parent+pf->first].pid;
+               ped[sibship[sibshiplist][k]+pf->first].father = &ped[parent+pf->first];
+            }else{
+               ped[sibship[sibshiplist][k]+pf->first].motid = ped[parent+pf->first].pid;
+               ped[sibship[sibshiplist][k]+pf->first].mother = &ped[parent+pf->first];
+            }
+      }
+   }  // End of j loop for PO pairs
+   for(int i = 0; i < pf->count; i++){
+      int couple1 = -1; int couple2 = -1;
+      for(int j = 0; j < poConnection[i].Length(); j++)
+         for(int k = j+1; k < poConnection[i].Length(); k++)
+            if(relationship[poConnection[i][j]][poConnection[i][k]] < 0.0625){// two PO are unrelated
+               if(ped[poConnection[i][j]+pf->first].sex==1 || ped[poConnection[i][k]+pf->first].sex==2){
+                  couple1 = poConnection[i][j];
+                  couple2 = poConnection[i][k];
+               }else if(ped[poConnection[i][j]+pf->first].sex==2 || ped[poConnection[i][k]+pf->first].sex==1){
+                  couple1 = poConnection[i][k];
+                  couple2 = poConnection[i][j];
+               }
+            }
+      if(couple1 > -1){ // two parents identified
+         ped[i+pf->first].fatid = ped[couple1+pf->first].pid;
+         ped[i+pf->first].motid = ped[couple2+pf->first].pid;
+         sprintf(buffer, "  RULE PO.2P: %s and %s are %s's parents\n",
+            (const char*)ped[i+pf->first].fatid,
+            (const char*)ped[i+pf->first].motid,
+            (const char*)ped[i+pf->first].pid);
+         message += buffer;
+         for(int k = 0; k < poConnection[i].Length(); k++){
+            if(poConnection[i][k] == couple1 || poConnection[i][k] == couple2) continue;
+            if(ped[i+pf->first].sex == 1)
+               ped[poConnection[i][k] + pf->first].fatid = i;
+            else
+               ped[poConnection[i][k] + pf->first].motid = i;
+         }
+      }else if(d2Connection[i].Length()){
+         for(int k = 0; k < poConnection[i].Length(); k++)
+            if(relationship[d2Connection[i][0]][poConnection[i][k]] > 0.03125 &&
+               relationship[d2Connection[i][0]][poConnection[i][k]] < 0.0884){
+               parent = i; // One's relative is D3 with the other
+               offspring = poConnection[i][k];  // then the other is offspring
+               int sex = ped[i+pf->first].sex;
+               if(sex != 1 && sex != 2) continue;
+               if(sex==1){
+                  ped[offspring + pf->first].fatid = ped[parent+pf->first].pid;
+                  sprintf(buffer, "  RULE PO.D2.D3: %s is now father of %s\n",
+                     (const char*)ped[parent+pf->first].pid,
+                     (const char*)ped[offspring+pf->first].pid);
+               }else{
+                  ped[offspring + pf->first].motid = ped[parent+pf->first].pid;
+                  sprintf(buffer, "  RULE PO.D2.D3: %s is now mother of %s\n",
+                     (const char*)ped[parent+pf->first].pid,
+                     (const char*)ped[offspring+pf->first].pid);
+               }
+               message += buffer;
+               if((sex==1 && ped[poConnection[i][k] + pf->first].motid=="0") ||
+                  (sex==2 && ped[poConnection[i][k] + pf->first].fatid=="0") ){
+                     inclusionList[0].Push(ped.families[f]->famid);
+                     tempS = missingBase + newparent;
+                     if(sex==1){
+                        sprintf(buffer, "    %s is created as %s's mother.\n",
+                           (const char*)tempS, (const char*)ped[offspring+pf->first].pid);
+                        ped[offspring+pf->first].motid = tempS;
+                     }else{
+                        sprintf(buffer, "    %s is created as %s's father.\n",
+                           (const char*)tempS, (const char*)ped[offspring+pf->first].pid);
+                        ped[offspring+pf->first].fatid = tempS;
+                     }
+                     message += buffer;
+                     newparent++;
+                     inclusionList[1].Push(tempS);
+                     tempS = 3-sex;
+                     inclusionList[2].Push(tempS);
+                     inclusionList[3].Push("");
+                     inclusionList[4].Push("");
+                  }
+            }
+      }  // End of if there are two parents or D2
+   }  // End of loop over each person
+
+   if(IBDvalidFlag && Bit64==64){   // Check 2nd-degree
+      sprintf(buffer, "\n");
+      message += buffer;
+      IntArray relativeType[3];
+      String stringType[3] = {"HS", "AV", "GG"};
+      IntArray unrelatedTo[2];
+      int L2Count = L2.Length()/2;
+      for(int j = 0; j < L2Count; j++){
+         for(int s = 0; s < 2; s++) ids[s] = L2[j*2+s];
+         if(valid[ids[0]] == 0 || valid[ids[1]] == 0) continue;
+         tempArray = ibd1segs[pairIndex[ids[0]][ids[1]]]; //S1S2
+         for(int s = 0; s < 2; s++) unrelatedTo[s].Dimension(0);
+         for(int s = 0; s < 2; s++)
+            for(int k = 0; k < d123Connection[ids[s]].Length(); k++){
+               int relative = d123Connection[ids[s]][k];
+               if(relative == ids[1-s]) continue;
+               double joinRatio = RoRP(tempArray,
+                  ibd1segs[pairIndex[ids[s]][relative]],
+                  ibd1segs[pairIndex[ids[1-s]][relative]], bp);
+               if(joinRatio < 0.125 && joinRatio >= 0) unrelatedTo[1-s].Push(relative);
+            }
+         if(unrelatedTo[0].Length() && unrelatedTo[1].Length()){  // D2.HS.UN2
+            for(int s = 0; s < 2; s++){
+               sprintf(buffer, "    HS %s unrelated to", (const char*)ped[ids[1-s]+pf->first].pid);
+               message += buffer;
+               for(int k = 0; k < unrelatedTo[1-s].Length(); k++){
+                  sprintf(buffer, " %s", (const char*)ped[unrelatedTo[1-s][k]+pf->first].pid);
+                  message += buffer;
+               }
+               sprintf(buffer, "\n");
+               message += buffer;
+            }
+            sprintf(buffer, "  INFERENCE D2.HS.UN2: %s and %s are HS\n",
+               (const char*)ped[ids[0]+pf->first].pid,
+               (const char*)ped[ids[1]+pf->first].pid);
+            message += buffer;
+            bool validFlag = true;
+            int parentSex[2]; parentSex[0]=parentSex[1]=0;
+            for(int s = 0; s < 2; s++){
+               if(ped[ids[s]+pf->first].father) {
+                  parentSex[s] |= 1;
+                  if(ped[ids[1-s]+pf->first].father == ped[ids[s]+pf->first].father)
+                     validFlag = false;
+               }
+               if(ped[ids[s]+pf->first].mother) {
+                  parentSex[s] |= 2;
+                  if(ped[ids[1-s]+pf->first].mother == ped[ids[s]+pf->first].mother)
+                     validFlag = false;
+               }
+            }
+            if(validFlag && (parentSex[0] || parentSex[1]) && parentSex[0]!=3 && parentSex[1]!=3){   // not reconstructed yet
+               int s = parentSex[0]? 0: 1;
+               if(parentSex[s] == 2){  // father is missing
+                  ped[ids[1-s]+pf->first].fatid = ped[ids[s]+pf->first].fatid;
+                  sprintf(buffer, "  RULE D2.HS.UN2: %s's father is now %s\n",
+                     (const char*)ped[ids[1-s]+pf->first].pid,
+                     (const char*)ped[ids[s]+pf->first].fatid);
+               }else{   // mother is missing
+                  ped[ids[1-s]+pf->first].motid = ped[ids[s]+pf->first].motid;
+                  sprintf(buffer, "  RULE D2.HS.UN2: %s's mother is now %s\n",
+                     (const char*)ped[ids[1-s]+pf->first].pid,
+                     (const char*)ped[ids[s]+pf->first].motid);
+               }
+               message += buffer;
+            }
+            for(int k = 0; k < d2Connection[ids[0]].Length(); k++){  // Check AV
+               int sharedD2 = d2Connection[ids[0]][k];
+               int m = d2Connection[ids[1]].Find(sharedD2);
+               if(m==-1) continue;
+               double joinRatio = RoRP(ibd1segs[pairIndex[ids[0]][sharedD2]],
+                  ibd1segs[pairIndex[ids[1]][sharedD2]],
+                  ibd1segs[pairIndex[ids[0]][ids[1]]], bp);
+               if(joinRatio < 0.85 && joinRatio > 0.6){
+                  sprintf(buffer, "    Join3/Join2 = %.2lf\n", joinRatio);
+                  message += buffer;
+                  sprintf(buffer, "  INFERENCE D2.AV.HS: %s is %s of %s and %s\n",
+                     (const char*)ped[sharedD2+pf->first].pid,
+                     ped[sharedD2+pf->first].sex == 1? "uncle": "Aunt",
+                     (const char*)ped[ids[0]+pf->first].pid,
+                     (const char*)ped[ids[1]+pf->first].pid);
+                  message += buffer;
+                  for(int s = 0; s < 2; s++){
+                     int pa_sex = 0;
+                     if(ped[ids[s]+pf->first].father && !ped[ids[s]+pf->first].mother &&
+                        relationship[ped[ids[s]+pf->first].father->serial-pf->first][sharedD2] < 0.177)
+                        pa_sex = 1;
+                     if(ped[ids[s]+pf->first].mother && !ped[ids[s]+pf->first].father &&
+                        relationship[ped[ids[s]+pf->first].mother->serial-pf->first][sharedD2] < 0.177)
+                        pa_sex = 2;
+                     if(pa_sex){
+                        int m = inclusionList[1].Find((pa_sex==1)?
+                           ped[ids[s]+pf->first].motid: ped[ids[s]+pf->first].fatid);
+                        if(m==-1) continue;
+                        if(ped[sharedD2+pf->first].fatid == "0" && ped[sharedD2+pf->first].motid == "0"){
+                           inclusionList[0].Push(ped[sharedD2+pf->first].famid);
+                           tempS = missingBase + newparent;
+                           sprintf(buffer, "    %s is created as %s's father.\n",
+                              (const char*)tempS, (const char*)ped[sharedD2+pf->first].pid);
+                           message += buffer;
+                           ped[sharedD2+pf->first].fatid = tempS;
+                           newparent++;
+                           inclusionList[3].Push("");
+                           inclusionList[4].Push("");
+                           inclusionList[3][m] = tempS;
+                           inclusionList[2].Push("1");
+                           inclusionList[1].Push(tempS);
+
+                           inclusionList[0].Push(ped[sharedD2+pf->first].famid);
+                           tempS = missingBase + newparent;
+                           sprintf(buffer, "    %s is created as %s's mother.\n",
+                              (const char*)tempS, (const char*)ped[sharedD2+pf->first].pid);
+                           message += buffer;
+                           ped[sharedD2+pf->first].motid = tempS;
+                           newparent++;
+                           inclusionList[3].Push("");
+                           inclusionList[4].Push("");
+                           inclusionList[4][m] = tempS;
+                           inclusionList[2].Push("2");
+                           inclusionList[1].Push(tempS);
+                        }else{   // uncle/aunt's parents known
+                           inclusionList[3][m] = ped[sharedD2+pf->first].fatid;
+                           inclusionList[4][m] = ped[sharedD2+pf->first].motid;
+                        }
+                        sprintf(buffer, "  RULE D2.AV.HS: %s of %s and %s (%s) now has parents (%s, %s)\n",
+                           pa_sex==1? "mother": "father",
+                           (const char*)ped[ids[s]+pf->first].pid,
+                           (const char*)ped[ids[1-s]+pf->first].pid,
+                           (const char*)ped[ids[s]+pf->first].motid,
+                           (const char*)ped[sharedD2+pf->first].fatid,
+                           (const char*)ped[sharedD2+pf->first].motid);
+                        message += buffer;
+                        break;
+                     }
+                  }
+               }else{
+                  sprintf(buffer, "    %s is HS or %s with %s and %s\n",
+                     (const char*)ped[sharedD2+pf->first].pid,
+                     ped[sharedD2+pf->first].sex == 1? "grandfather": "grandmother",
+                     (const char*)ped[ids[0]+pf->first].pid,
+                     (const char*)ped[ids[1]+pf->first].pid);
+                  message += buffer;
+               }
+            }
+            continue;
+         }
+         double longestLength = 0.0, longestRatio;
+         int longestR1, longestR2, longestType;
+         for(int s = 0; s < 2; s++){
+            for(int k = 1; k < 3; k++) relativeType[k].Dimension(0);
+            if(s==0) relativeType[0].Dimension(0);
+            for(int k = 0; k < d123Connection[ids[s]].Length(); k++){
+               int relative = d123Connection[ids[s]][k];
+               if(relative == ids[1-s] || relationship[ids[s]][relative] < relationship[ids[1-s]][relative]) continue;
+               tempArray = ibd1segs[pairIndex[ids[s]][relative]];  // PR
+               tempArray2 = ibd1segs[pairIndex[ids[1-s]][relative]];  // OR
+               SegmentIntersect(tempArray, tempArray2, ibd1seg);
+               double intersectLength = SegmentLength(ibd1seg, bp);
+               double temp2Length = SegmentLength(tempArray2, bp);   // OR length in Mb
+               double tempLength = SegmentLength(tempArray, bp);   // OR length in Mb
+               if(temp2Length > 100000000){  // OR Length > 100Mb
+                  double ratio = intersectLength * 1.0 / temp2Length;
+                  int type1 = int(0.5-log(ratio)/log(2));
+                  if(type1 < 0) type1 = 0;
+                  else if(type1 > 3) continue;
+                  else if(type1 > 2) type1 = 2;
+                  double ratio2 = intersectLength * 1.0 / tempLength;
+                  int type2 = int(0.5-log(ratio2)/log(2));
+                  if(type2 < 0) type2 = 0;
+                  else if(type2 > 3) continue;
+                  else if(type2 > 2) type2 = 2;
+                  int type = type2 - type1;
+                  if(type==0 && type1==1 && type2==1 && ratio2 < ratio*1.414214 || // HS
+                     type==1 && type1==1 && type2==2 || // AV
+                     type==2 && type1==0 && type2==2 && ratio > 0.8 && ratio2 > ratio * 2.828427)// GG
+                  relativeType[type].Push(relative);
+               }
+            }
+            for(int k = (s==0)?1:0; k < 3; k++){
+               int relativeCount = relativeType[k].Length();
+               if(relativeCount < 2) continue;
+               for(int k1 = 0; k1 < relativeCount; k1++){
+                  int relative = relativeType[k][k1];
+                  tempArray = ibd1segs[pairIndex[ids[s]][relative]];
+                  for(int k2 = k1+1; k2 < relativeCount; k2++){
+                     int relative2 = relativeType[k][k2];
+                     double joinRatio = RoRP(tempArray,
+                        ibd1segs[pairIndex[ids[s]][relative2]],
+                        ibd1segs[pairIndex[relative][relative2]], bp);
+                     if(joinRatio < 0.125 && joinRatio >= 0){   // R1 R2 unrelated
+                        double length = SegmentLength(tempArray, bp)+SegmentLength(ibd1segs[pairIndex[ids[s]][relative2]], bp);
+                        if(length > longestLength){
+                           longestType = k;
+                           parent = ids[s];
+                           offspring = ids[1-s];
+                           longestR1 = relative;
+                           longestR2 = relative2;
+                           longestLength = length;
+                           longestRatio = joinRatio;
+                        }
+                     }
+                  }  // End of k2 for k2-th relative
+               }  // End of k1 for k1-th relative
+            }  // End of k for 3 types
+         }  // End of s for either of the pair order
+         if(longestLength > 10){
+            sprintf(buffer, "    %s: (P1=%s, P2=%s, R1=%s, R2=%s): R1R2 relatedness = %.2G, P1R length=%.1lfMb\n",
+               (const char*)stringType[longestType],
+               (const char*)ped[parent+pf->first].pid,
+               (const char*)ped[offspring+pf->first].pid,
+               (const char*)ped[longestR1+pf->first].pid,
+               (const char*)ped[longestR2+pf->first].pid,
+               longestRatio, longestLength*0.000001);
+            message += buffer;
+            if(longestType==1){//AV
+               if(ped[offspring+pf->first].father && !ped[offspring+pf->first].mother){
+                  sprintf(buffer, "  RULE D2.AV.RELS.UN: %s's mother %s's parents are (%s, %s)\n",
+                     (const char*)ped[offspring+pf->first].pid,
+                     (const char*)ped[offspring+pf->first].motid,
+                     (const char*)ped[parent+pf->first].fatid,
+                     (const char*)ped[parent+pf->first].motid);
+                  message += buffer;
+                  String informativeMissing = ped[offspring+pf->first].motid;
+                  int m = inclusionList[1].Find(informativeMissing);
+                  if(m>-1){
+                     inclusionList[3][m] = ped[parent+pf->first].fatid;
+                     inclusionList[4][m] = ped[parent+pf->first].motid;
+                  }
+               }else if(ped[offspring+pf->first].mother && !ped[offspring+pf->first].father){
+                  sprintf(buffer, "  RULE D2.AV.RELS.UN: %s's father %s's parents are (%s, %s)\n",
+                     (const char*)ped[offspring+pf->first].pid,
+                     (const char*)ped[offspring+pf->first].fatid,
+                     (const char*)ped[parent+pf->first].fatid,
+                     (const char*)ped[parent+pf->first].motid);
+                  message += buffer;
+                  String informativeMissing = ped[offspring+pf->first].fatid;
+                  int m = inclusionList[1].Find(informativeMissing);
+                  if(m>-1){
+                     inclusionList[3][m] = ped[parent+pf->first].fatid;
+                     inclusionList[4][m] = ped[parent+pf->first].motid;
+                  }
+               }
+            }else if(longestType==2){   // GG
+
+            }else if(longestType==0){   // HS
+
+            }
+         }
+      }  // End of j for L2
+   }  // End of if IBDseg
+   for(int i = pf->first; i <= pf->last; i++)
+      if(!valid[i-pf->first]){
+         tempS = ped[i].famid;
+         tempS += "->";
+         tempS += ped[i].pid;
+         exclusionList.Push(tempS);
+      }
+   delete []poConnection;
+   delete []d2Connection;
+   delete []d123Connection;
+   if(IBDvalidFlag && Bit64==64) delete []pairIndex;
+   missingBase += newparent;
+   return 1;
+}
 
 void Engine::internalKING(int degree)
 {
    if(shortCount==0) error("No genotype data");
    printf("Autosome genotypes stored in %d", Bit64==64? longCount:shortCount);
    printf(" words for each of %d individuals.\n", idCount);
-
-   if(bigdataFlag)
-      printf("Fast algorithms for big data are used for relationship inference\n");
-   else
-      printf("Standard algorithms for smaller datasets are used for relationship inference\n");
-/*
-   int stop2 = 2304; // 256*9
-   if(degree > 1) stop2 <<= 3;
+   int stop1, stop2;
    if(Bit64==64){
-      if(SLG[0]==NULL)
-         ConvertLGtoSLG(LG, markerCount, SLG, (stop2/4 < longCount)? (stop2/4)*64: markerCount);
-   }else{
-      if(SG[0]==NULL)
-         ConvertGGtoSG(GG, markerCount, SG, (stop2 < shortCount)? stop2*16: markerCount);
-   }
- */
-    int stop1, stop2;
-    if(Bit64==64){
       stop1 = 64;
       stop2 = (stop1<<3);
       if(degree == 2) stop1 <<= 3;
@@ -56,7 +1022,6 @@ void Engine::internalKING(int degree)
       if(stop1 > shortCount) stop1 = shortCount;
       if(stop2 > shortCount) stop2 = shortCount;
    }
-
    printf("Sorting autosomes...\n");
    if(Bit64==64){
       if(SLG[0]==NULL){
@@ -67,7 +1032,6 @@ void Engine::internalKING(int degree)
          else
             error("Degree of relatedness not defined.");
       }
-//         ConvertLGtoSLG(LG, markerCount, SLG, (stop2/4 < longCount)? (stop2/4)*64: markerCount);
    }else{
       if(SG[0]==NULL){
          if(degree==1)
@@ -77,16 +1041,10 @@ void Engine::internalKING(int degree)
          else
             error("Degree of relatedness not defined.");
       }
-//      if(SG[0]==NULL)
-//         ConvertGGtoSG(GG, markerCount, SG, (stop2 < shortCount)? stop2*16: markerCount);
    }
-
-//   IntArray chrSeg;
-//   double totalLength;
    bool IBDvalidFlag = false;
-//   String segmessage;
    if(Bit64==64)
-      IBDvalidFlag = PreSegment(/*chrSeg, totalLength, segmessage*/);
+      IBDvalidFlag = PreSegment();
    if(!IBDvalidFlag){
       printf("%s\n", (const char*)segmessage);
       printf("  Inference will be based on kinship estimation only.\n");
@@ -96,189 +1054,170 @@ void Engine::internalKING(int degree)
       defaultMaxCoreCount);
 #endif
    relativedegree = degree;
-   IntArray allpairs0, allpairs1(0), allpairs;
-//   unsigned long int rawrelativeCount;
-
+   IntArray *allpairs0 = new IntArray [defaultMaxCoreCount];
+   IntArray *allpairs = new IntArray [defaultMaxCoreCount];
    // most computationally intensive here: SCREENING RELATIVES
    if(Bit64==64)
       ScreenCloseRelativesInSubset64Bit(allpairs0);
    else
       ScreenCloseRelativesInSubset(allpairs0);
-   //****************SCREENING RELATIVES end************************
-
    int id1, id2;
-   for(int i = 0; i < allpairs0.Length()/2; i++){
-      id1 = allpairs0[i*2];
-      id2 = allpairs0[i*2+1];
-      if(ped[phenoid[id1]].famid != ped[phenoid[id2]].famid){
-         allpairs1.Push(id1);
-         allpairs1.Push(id2);
+   long long int midrelativeCount = 0;
+   for(int t = 0; t < defaultMaxCoreCount; t++)
+      allpairs[t].Dimension(0);
+   for(int t = 0; t < defaultMaxCoreCount; t++){
+      int pairCount = allpairs0[t].Length()/2;
+      for(int i = 0; i < pairCount; i++){
+         id1 = allpairs0[t][i*2];
+         id2 = allpairs0[t][i*2+1];
+         if(ped[phenoid[id1]].famid != ped[phenoid[id2]].famid){
+            allpairs[t].Push(id1);
+            allpairs[t].Push(id2);
+         }
       }
+      midrelativeCount += allpairs[t].Length()/2;
    }
-   unsigned long int midrelativeCount = allpairs1.Length() / 2;
+   delete []allpairs0;
    if(midrelativeCount==0) return;
 
    double lowerbound = pow(2.0, -(relativedegree+1.5));
-   Vector pM(midrelativeCount);
-   for(int i = 0; i < midrelativeCount; i++){
-      pM[i] = allpairs1[i*2];
-      pM[i] *= idCount;
-      pM[i] += allpairs1[i*2+1];
-   }
-   QuickIndex index;
-   index.Index(pM);
-   allpairs.Dimension(midrelativeCount*2);
-   for(int i = 0; i < midrelativeCount; i++){
-      int k = index[i];
-      allpairs[i*2] = allpairs1[k*2];
-      allpairs[i*2+1] = allpairs1[k*2+1];
-   }
-
    IntArray HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts, IBSCounts;
+   double smaller, kinship;
+   Vector ibdprops, maxLengths, ibd2props, maxLengths2;
+   double ibdprop, ibd2prop;
+   L0.Dimension(0);
+   Lfs.Dimension(0);
+   Lpo.Dimension(0);
+   L2.Dimension(0);
+   IntArray L1(0);
+   Vector IBS0L1(0);
+   for(int t = 0; t < defaultMaxCoreCount; t++){
+      int pairCount = allpairs[t].Length()/2;
+      if(pairCount == 0) continue;
 
-   //****************************Compute kinship coefficient*****************************
-   if(Bit64==64)
-      KinshipInSubset64Bit(allpairs, HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts, IBSCounts);
-   else
-      KinshipInSubset(allpairs, HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts);
-   //****************************Compute kinship coefficient*****************************
+      //****************************Compute kinship coefficient*****************************
+      if(Bit64==64)
+         KinshipInSubset64Bit(allpairs[t], HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts, IBSCounts);
+      else
+         KinshipInSubset(allpairs[t], HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts, IBSCounts);
+      //****************************Compute kinship coefficient*****************************
 
-   if(Bit64==32){
-      unsigned long int midrelativeCount = allpairs.Length() / 2;
-      if(midrelativeCount==0) return;
-//      double lowerbound = pow(2.0, -(relativedegree+1.5));
-      double smaller;
-      double kinship;
-      L0.Dimension(0);
-      Lfs.Dimension(0);
-      Lpo.Dimension(0);
-      L2.Dimension(0);
-      IntArray L1(0);
-      Vector IBS0L1(0);
-      double ibs0;
-      for(int p = 0; p < midrelativeCount; p++){
-         id1 = allpairs[p*2];
-         id2 = allpairs[p*2+1];
+      if(Bit64==32 || !IBDvalidFlag){
+         for(int p = 0; p < pairCount; p++){
+            id1 = allpairs[t][p*2];
+            id2 = allpairs[t][p*2+1];
+            smaller = HetHetCounts[p] + (het1Counts[p] < het2Counts[p]? het1Counts[p]: het2Counts[p]);
+            kinship = 0.5 - ((het1Counts[p]+het2Counts[p])*0.25+IBS0Counts[p])/smaller;
+            if(kinship <= 0) continue;
+            int deg = int(-log(kinship)/0.6931472-0.5);;
+            if(deg == 0){
+               L0.Push(phenoid[id1]);
+               L0.Push(phenoid[id2]);
+            }else if(deg == 1){
+               int IBS0Count = IBS0Counts[p];
+               int notMissingCount = het1Counts[p] + het2Counts[p] + HomHomCounts[p] + HetHetCounts[p];
+               double ibs0 = IBS0Count*1.0/notMissingCount;
+               IBS0L1.Push(ibs0);
+               L1.Push(phenoid[id1]);
+               L1.Push(phenoid[id2]);
+            }else if(deg == 2){
+               L2.Push(phenoid[id1]); L2.Push(phenoid[id2]);
+            }
+         }
+      }else{   // 64 bit && IBDvalidFlag
+         IBDSegInSubset64Bit(allpairs[t], ibdprops, maxLengths, ibd2props, maxLengths2);
+      for(int p = 0; p < pairCount; p++){
+         if(!het1Counts[p] && !het2Counts[p] && !HetHetCounts[p]) continue;
+         id1 = allpairs[t][p*2];
+         id2 = allpairs[t][p*2+1];
          smaller = HetHetCounts[p] + (het1Counts[p] < het2Counts[p]? het1Counts[p]: het2Counts[p]);
          kinship = 0.5 - ((het1Counts[p]+het2Counts[p])*0.25+IBS0Counts[p])/smaller;
-         int deg = int(-log(kinship)/0.6931472-0.5);;
-         if(deg == 0){
-            L0.Push(phenoid[id1]);
-            L0.Push(phenoid[id2]);
-         }else if(deg == 1){
-            int IBS0Count = IBS0Counts[p];
-            int notMissingCount = het1Counts[p] + het2Counts[p] + HomHomCounts[p] + HetHetCounts[p];
-            ibs0 = IBS0Count*1.0/notMissingCount;
-            IBS0L1.Push(ibs0);
-            L1.Push(phenoid[id1]);
-            L1.Push(phenoid[id2]);
-         }else if(deg == 2){
-            L2.Push(phenoid[id1]); L2.Push(phenoid[id2]);
+         if(IBDvalidFlag){
+            ibdprop = ibdprops[p];
+            ibd2prop = ibd2props[p];
          }
+         if(relativedegree == 1){
+            if(IBDvalidFlag){
+               double pi = ibd2prop + ibdprop*0.5;
+               if((kinship < 0.125) ||   // pass if phi < 0.125
+                  ((kinship < lowerbound) &&   //  pass if phi<0.177 AND following
+                  (pi < 0.3535534 || (ibd2prop<=0.08 && ibdprop+ibd2prop<0.9))) )
+                  continue;
+            }else{
+               if(kinship < lowerbound) continue;
+            }
+         }else{   // degree == 2
+            if(IBDvalidFlag){
+               if((kinship < 0.0442) ||   // pass if phi < 0.0442
+                  ((kinship < lowerbound) &&   //  pass if phi<0.0884 AND following
+                  (ibdprop+ibd2prop <= 0.3535534)) )
+                  continue;
+            }else{
+               if(kinship < lowerbound) continue;
+            }
+         }
+         double CHet = HetHetCounts[p] * 1.0/ (HetHetCounts[p] + het1Counts[p] + het2Counts[p]);
+         if(IBDvalidFlag){
+            if(CHet<0.8){
+               double pi = ibd2prop + ibdprop * 0.5;
+               if(pi > 0.3535534){  // 1st-degree
+                  if(ibdprop + ibd2prop > 0.96 || (ibdprop + ibd2prop > 0.9 && ibd2prop <= 0.08)){
+                     Lpo.Push(phenoid[id1]);
+                     Lpo.Push(phenoid[id2]);
+                  }else if(ibd2prop > 0.08){
+                     Lfs.Push(phenoid[id1]);
+                     Lfs.Push(phenoid[id2]);
+                  }else{
+                     L2.Push(phenoid[id1]);
+                     L2.Push(phenoid[id2]);
+                  }
+               }else if(pi > 0.1767767){  // 2nd-degree
+                  if(pi > 0.32 && ibd2prop > 0.15){
+                     Lfs.Push(phenoid[id1]);
+                     Lfs.Push(phenoid[id2]);
+                  }else{
+                     L2.Push(phenoid[id1]);
+                     L2.Push(phenoid[id2]);
+                  }
+               }
+            }else{
+               L0.Push(phenoid[id1]);
+               L0.Push(phenoid[id2]);
+            }
+         }  // end of if IBDvalidFlag
+      }  // end of pairs
       }
+   }  // end of t loop for thread
+
+   if(Bit64==32 || !IBDvalidFlag){
       if(errorrateCutoff == _NAN_){
-      IntArray L1Count(10);
-      L1Count.Zero();
-      int lowT, highT;
-      for(int i = 0; i < IBS0L1.Length(); i++)
-         if(IBS0L1[i] < 0.01)
-            L1Count[int(IBS0L1[i]*1000)] ++;
-      for(lowT=0; L1Count[lowT] && lowT < 9; lowT++);
-      for(highT=9; L1Count[highT] && highT >=0; highT--);
-      if(lowT<=highT)
-         errorrateCutoff = (lowT+highT+1)*0.0005;
-      else{
-         for(highT = 9; L1Count[highT] > L1Count.Min(); highT--);
-         errorrateCutoff = (highT+0.5)*0.001;
+         IntArray L1Count(10);
+         L1Count.Zero();
+         int lowT, highT;
+         for(int i = 0; i < IBS0L1.Length(); i++)
+            if(IBS0L1[i] < 0.01)
+               L1Count[int(IBS0L1[i]*1000)] ++;
+         for(lowT=0; L1Count[lowT] && lowT < 9; lowT++);
+         for(highT=9; L1Count[highT] && highT >=0; highT--);
+         if(lowT<=highT)
+            errorrateCutoff = (lowT+highT+1)*0.0005;
+         else{
+            for(highT = 9; L1Count[highT] > L1Count.Min(); highT--);
+            errorrateCutoff = (highT+0.5)*0.001;
+         }
+         printf("Cutoff value between FS and PO is set at %.4f\n", errorrateCutoff);
       }
-      printf("Cutoff value between full siblings and parent-offspring is set at %.4f\n",
-         errorrateCutoff);
-      }
-      for(int i = 0; i < IBS0L1.Length(); i++)
+      for(int i = 0; i < IBS0L1.Length(); i++){
          if(IBS0L1[i] > errorrateCutoff) {
             Lfs.Push(L1[i*2]);
             Lfs.Push(L1[i*2+1]);
          }else{
             Lpo.Push(L1[i*2]);
             Lpo.Push(L1[i*2+1]);
+         }
       }
-      return;
    }
-   double smaller, kinship;
-   Vector ibdprops, maxLengths, ibd2props, maxLengths2;
-   double ibdprop, ibd2prop;
-   if(IBDvalidFlag){
-      //******************Compute IBD2 Segments****************************
-      if(Bit64==64)
-         IBDSegInSubset64Bit(allpairs, ibdprops, maxLengths, ibd2props, maxLengths2);
-      else
-         IBD2SegInSubset(allpairs, ibd2props, maxLengths2);
-      //******************Compute IBD2 Segments****************************
-   }
-   L0.Dimension(0);
-   Lfs.Dimension(0);
-   Lpo.Dimension(0);
-   L2.Dimension(0);
-   for(int p = 0; p < midrelativeCount; p++){
-      if(!het1Counts[p] && !het2Counts[p] && !HetHetCounts[p]) continue;
-      id1 = allpairs[p*2];
-      id2 = allpairs[p*2+1];
-      smaller = HetHetCounts[p] + (het1Counts[p] < het2Counts[p]? het1Counts[p]: het2Counts[p]);
-      kinship = 0.5 - ((het1Counts[p]+het2Counts[p])*0.25+IBS0Counts[p])/smaller;
-      if(IBDvalidFlag){
-         ibdprop = ibdprops[p];
-         ibd2prop = ibd2props[p];
-      }
-      if(relativedegree == 1){
-         if(IBDvalidFlag){
-            double pi = ibd2prop + ibdprop*0.5;
-            if((kinship < 0.125) ||   // pass if phi < 0.125
-               ((kinship < lowerbound) &&   //  pass if phi<0.177 AND following
-               (pi < 0.3535534 || (ibd2prop<=0.08 && ibdprop+ibd2prop<0.9))) )
-               continue;
-         }else{
-            if(kinship < lowerbound) continue;
-         }
-      }else{   // degree == 2
-         if(IBDvalidFlag){
-            if((kinship < 0.0442) ||   // pass if phi < 0.0442
-               ((kinship < lowerbound) &&   //  pass if phi<0.0884 AND following
-               (ibdprop+ibd2prop <= 0.3535534)) )
-               continue;
-         }else{
-            if(kinship < lowerbound) continue;
-         }
-      }
-      double CHet = HetHetCounts[p] * 1.0/ (HetHetCounts[p] + het1Counts[p] + het2Counts[p]);
-      if(IBDvalidFlag){
-         if(CHet<0.8){
-            double pi = ibd2prop + ibdprop * 0.5;
-            if(pi > 0.3535534){  // 1st-degree
-               if(ibdprop + ibd2prop > 0.96 || (ibdprop + ibd2prop > 0.9 && ibd2prop <= 0.08)){
-                  Lpo.Push(phenoid[id1]);
-                  Lpo.Push(phenoid[id2]);
-               }else if(ibd2prop > 0.08){
-                  Lfs.Push(phenoid[id1]);
-                  Lfs.Push(phenoid[id2]);
-               }else{
-                  L2.Push(phenoid[id1]);
-                  L2.Push(phenoid[id2]);
-               }
-            }else if(pi > 0.1767767){  // 2nd-degree
-               if(pi > 0.32 && ibd2prop > 0.15){
-                  Lfs.Push(phenoid[id1]);
-                  Lfs.Push(phenoid[id2]);
-               }else{
-                  L2.Push(phenoid[id1]);
-                  L2.Push(phenoid[id2]);
-               }
-            }
-         }else{
-            L0.Push(phenoid[id1]);
-            L0.Push(phenoid[id2]);
-         }
-      }  // end of if IBDvalidFlag
-   }  // end of pairs
+   delete []allpairs;
 }
 
 int Engine::ClusterFamily(int pedrebuildFlag, int degree)
@@ -306,9 +1245,6 @@ int Engine::ClusterFamily(int pedrebuildFlag, int degree)
          printf("\t--cluster\n");
       if(degree > 1)
          printf("\t--degree 2\n");
-      if(bigdataFlag)
-         if(slower)
-            printf("\t--slower %d\n", slower);
       if(CoreCount)
          printf("\t--cpus %d\n", CoreCount);
       if(SaveFormat == "MERLIN")
@@ -321,11 +1257,14 @@ int Engine::ClusterFamily(int pedrebuildFlag, int degree)
    }
 
    printf("Family clustering starts at %s", currentTime());
-   if(idCount >= 100)  // fast computation
+   if(idCount >= 10)  // fast computation
       internalKING(degree);
-   else
+   else if(Bit64 == 64){
+      printf("This function is currently disabled for tiny dataset with sample size < 10.\n");
+      return 0;
+   }else
       runKING();
-   printf("\nClustering up to %d%s-degree relatives in families...\n",
+   printf("Clustering up to %d%s-degree relatives in families...\n",
       degree, degree==1?"st":"nd");
 
    uniqueIID = true;
@@ -350,8 +1289,6 @@ int Engine::ClusterFamily(int pedrebuildFlag, int degree)
       oldID[i] += "->";
       oldID[i] += ped[i].pid;
    }
-
-//   countGenotype();
    IntArray Lr = L0;
    Lr.Stack(Lpo);
    Lr.Stack(Lfs);
@@ -370,7 +1307,6 @@ int Engine::ClusterFamily(int pedrebuildFlag, int degree)
       afterCount[0] = L0.Length()/2;
       afterCount[1] = (Lpo.Length() + Lfs.Length())/2;
       afterCount[2] = L2.Length()/2;
-//      afterCount[3] = L3.Length()/2;
       afterCount[4] = 0;
       afterCount[5] = Lpo.Length()/2;
       printRelationship(NULL, afterCount);
@@ -482,12 +1418,81 @@ int Engine::ClusterFamily(int pedrebuildFlag, int degree)
             temp1.Add("cluster");
             WritePlinkBinary(temp1);
          }
+         if(Bit64 == 64 && totalLength > 10000000){
+            IntArray ids, pairs, pairIndex, HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts, IBSCounts;
+            Vector ibdprops, maxLengths, ibd2props, maxLengths2;
+            String type, outfile;
+            outfile.Copy(prefix);
+            outfile.Add("cluster.kin");
+            fp = fopen((const char*)outfile, "wt");
+            fprintf(fp, "FID\tID1\tID2\tSex1\tSex2\tN_SNP\tHetHet\tIBS0\tHetConc\tHomIBS0\tKinship\tIBD1Seg\tIBD2Seg\tPropIBD\tInfType\n");
+            for(int c = 0; c < clusterCount; c++){
+               ids.Dimension(0);
+               for(int k = 0; k < cluster[c].Length(); k++){
+                  int f = cluster[c][k];
+                  for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++)
+                     if(geno[i]!=-1) ids.Push(geno[i]);
+               }
+               pairs.Dimension(0);
+               int idsCount = ids.Length();
+               for(int i = 0; i < idsCount; i++)
+                  for(int j = i+1; j < idsCount; j++){
+                     pairs.Push(ids[i]);
+                     pairs.Push(ids[j]);
+                  }
+               int pairCount = pairs.Length()/2;
+               if(pairCount==0) continue;
+               KinshipInSubset64Bit(pairs, HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts, IBSCounts);
+               IBDSegInSubset64Bit(pairs, ibdprops, maxLengths, ibd2props, maxLengths2);
+               for(int p = 0; p < pairCount; p++){
+                  if(!het1Counts[p] && !het2Counts[p] && !HetHetCounts[p]) continue;
+                  int id1 = pairs[p*2]; int id2 = pairs[p*2+1];
+                  double kinship = (HetHetCounts[p] - IBS0Counts[p]*2.0) / (HetHetCounts[p]*2+het1Counts[p]+het2Counts[p]);
+                  int notMissingCount = HetHetCounts[p]+het1Counts[p]+het2Counts[p]+HomHomCounts[p];
+                  double ibs0 = IBS0Counts[p] * 1.0/notMissingCount;
+                  double CHet = HetHetCounts[p] * 1.0 / (HetHetCounts[p]+het1Counts[p]+het2Counts[p]);
+                  double ibdprop = ibdprops[p];
+                  double ibd2prop = ibd2props[p];
+                  double pi = ibd2prop + ibdprop * 0.5;
+                  if(CHet<0.8){  // not MZ/Dup
+                     if(pi > 0.3535534){  // 1st-degree
+                        if(ibdprop + ibd2prop > 0.96 || (ibdprop + ibd2prop > 0.9 && ibd2prop <= 0.08))
+                           type = "PO";
+                        else if(ibd2prop > 0.08)
+                           type = "FS";
+                        else
+                           type = "2nd";
+                     }else if(pi > 0.1767767){  // 2nd-degree
+                        if(pi > 0.32 && ibd2prop > 0.15)
+                           type = "FS";
+                        else
+                           type = "2nd";
+                     }else if(pi > 0.08838835)
+                        type = "3rd";
+                     else if(pi > 0.04419417)
+                        type = "4th";
+                     else
+                        type = "UN";
+                  }else // Duplicate
+                     type="Dup/MZ";
+                  int phenoid1 = phenoid[id1];
+                  int phenoid2 = phenoid[id2];
+                  fprintf(fp, "KING%d\t%s\t%s\t%d\t%d\t%d\t%.4lf\t%.4lf\t%.4lf\t%.4lf\t%.4lf\t%.4lf\t%.4lf\t%.4lf\t%s\n",
+                     c+1, (const char*)ped[phenoid1].pid, (const char*)ped[phenoid2].pid,
+                     ped[phenoid1].sex, ped[phenoid2].sex, notMissingCount,
+                     HetHetCounts[p]*1.0/notMissingCount, ibs0, CHet, // CHet
+                     ibs0/(ibs0+(IBSCounts[p]-HetHetCounts[p])*1.0/notMissingCount), kinship,
+                     ibdprops[p], ibd2props[p], ibd2props[p] + ibdprops[p]*0.5, (const char*)type);       
+               }  // End of pairs
+            }  // End of c for clusters
+            fclose(fp);
+            printf("Pair-wise relatedness in newly clustered families saved in %s.\n", (const char*)outfile);
+         }  // End of if IBDseg                                                                               
          printf("KING cluster analysis ends at %s", currentTime());
          return 1;
       } // end of if cluster only
    }  // end of if Lr.Length()
    String newName, tempName;
-
    if(FID.Length() == 0){ // read from Merlin format input
       sampleName.Dimension(0);
       FID.Dimension(0);
@@ -519,7 +1524,6 @@ int Engine::ClusterFamily(int pedrebuildFlag, int degree)
                SEX.Push(tempName);
             }
    }
-
    String updateidsfile = prefix;
    updateidsfile.Add("updateids.txt");
    FILE *fp;
@@ -574,69 +1578,96 @@ int Engine::ClusterFamily(int pedrebuildFlag, int degree)
    return 1;
 }
 
-void Engine::rebuild()
+bool Engine::rebuild(int id_added)
 {
+   bool built = false;
    printf("Pedigree reconstruction starts at %s", currentTime());
-//   printf("Cutoff value to distinguish PO and FS is set at IBS0=%.4lf\n", errorrateCutoff);
-
    printf("Reconstructing pedigree...\n");
-   IntArray nofix(0);
-
    cAge = ped.covariateNames.SlowFind("AGE");
    if(cAge > -1)
       printf("Covariate %s is used for pedigree reconstruction.\n",
          (const char*)ped.covariateNames[cAge]);
    else
       printf("Age information not provided.\n");
-
-   // missingBase shouldn't be in the range of IID; default 100000
-   for(missingBase=100000; ;missingBase += 100000){
+   // Hopefully missingBase is not in the range of IID; default 100000
+   for(missingBase=id_added; ;missingBase += 100){
       bool overlapFlag = false;
       for(int i = 0; i < ped.count; i++)
-         if(int(ped[i].pid) >= missingBase && int(ped[i].pid) < missingBase+100000){
+         if(int(ped[i].pid) >= missingBase && int(ped[i].pid) < missingBase+100){
             overlapFlag = true;
             break;
          }
       if(!overlapFlag) break;
    }
-
-//   IntArray chrSeg;
-//   double totalLength;
-//   String segmessage;
-   if(Bit64==64)
-      PreSegment(/*chrSeg, totalLength, segmessage*/);
-
-   String updatefile = prefix;
-   updatefile.Add("updateparents.txt");
+   if(Bit64==64)PreSegment(/*chrSeg, totalLength, segmessage*/);
+   String logfile = prefix; logfile.Add("build.log");
+   FILE *fp2 = fopen((const char*)logfile, "wt");
+   String updatefile = prefix; updatefile.Add("updateparents.txt");
    FILE *fp = fopen((const char*)updatefile, "wt");
    String message;
-   for(int f = 0; f < ped.familyCount; f++){ // ready to be parallalized later
-      if(!BuildOneFamily(f, chrSeg, totalLength, message)) // no pedigree reconstruction in this family
-         nofix.Push(f);
-      else{
-         for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++){
-            if(ped[i].pid.SubStr(0,4) == "KING" && ped[i].ngeno == 0) continue;
-            fprintf(fp, "%s\t%s\t%s\t%s\n",
-               (const char*)ped[i].famid, (const char*)ped[i].pid,
-               (ped[i].fatid.SubStr(0, 4) == "KING" && ped[i].father && ped[i].father->ngeno==0)? "0": (const char*)ped[i].fatid,
-               (ped[i].motid.SubStr(0, 4) == "KING" && ped[i].mother && ped[i].mother->ngeno==0)? "0": (const char*)ped[i].motid);
-         }
+   for(int f = 0; f < ped.familyCount; f++) // ready to be parallalized later
+      if(BuildOneFamily(f, chrSeg, totalLength, message)){ // pedigree reconstruction in this family
+         built = true;
+         if(rplotFlag)
+            for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++){
+//               if(ped[i].pid.SubStr(0,4) == "KING" && ped[i].ngeno == 0) continue;
+               fprintf(fp, "%s\t%s\t%s\t%s\t%d\t%d\t%d\n",
+                  (const char*)ped[i].famid, (const char*)ped[i].pid,
+                  (const char*)ped[i].fatid, (const char*)ped[i].motid,
+                  ped[i].sex, ped.affectionCount? ped[i].affections[0]: 0,
+                  ped[i].ngeno? 0: 1);
+            }
+         else
+            for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++){
+               if(ped[i].pid.SubStr(0,4) == "KING" && ped[i].ngeno == 0) continue;
+               fprintf(fp, "%s\t%s\t%s\t%s\n",
+                  (const char*)ped[i].famid, (const char*)ped[i].pid,
+                  (ped[i].fatid.SubStr(0, 4) == "KING" && ped[i].father && ped[i].father->ngeno==0)? "0": (const char*)ped[i].fatid,
+                  (ped[i].motid.SubStr(0, 4) == "KING" && ped[i].mother && ped[i].mother->ngeno==0)? "0": (const char*)ped[i].motid);
+            }
          printf("%s", (const char*)message);
+         fprintf(fp2, "%s", (const char*)message);
       }
-   }
-   printf("\n");
-   
+   bool WriteFlag = false;
+   int inclusionCount = inclusionList[1].Length();
+   if(rplotFlag)
+      for(int i = 0; i < inclusionCount; i++){
+         fprintf(fp, "%s\t%s\t%s\t%s\t%d\t0\t1\n",
+            (const char*)inclusionList[0][i],
+            (const char*)inclusionList[1][i],
+            inclusionList[3][i]==""? "0": (const char*)inclusionList[3][i],
+            inclusionList[4][i]==""? "0": (const char*)inclusionList[4][i],
+            (int)inclusionList[2][i]);
+         if(inclusionList[3][i]!="" || inclusionList[4][i]!="") WriteFlag = true;
+      }
+   else
+      for(int i = 0; i < inclusionCount; i++)
+         if(inclusionList[3][i]!="" || inclusionList[4][i]!=""){
+            fprintf(fp, "%s\t%s\t%s\t%s\n",
+               (const char*)inclusionList[0][i],
+               (const char*)inclusionList[1][i],
+               (const char*)inclusionList[3][i],
+               (const char*)inclusionList[4][i]);
+            WriteFlag = true;
+         }
    fclose(fp);
+   fclose(fp2);
    printf("\n");
-   printf("Update-parent information is saved in file %s\n",
-      (const char*)updatefile);
-
+   String updateidsfile = prefix;
+   printf("Details of pedigree reconstruction are also available in log file %s\n", (const char*)logfile);
+   updateidsfile.Add("updateids.txt");
+   printf("Update-ID information is saved in file %s\n", (const char*)updateidsfile);
+   if(built)
+      printf("Update-parent information is saved in file %s\n", (const char*)updatefile);
+   else
+      printf("No pedigrees can be reconstructed.\n");
+   if(WriteFlag) printf("PLINK format genotypes are created for allowing untyped individuals in pedigrees.\n");
    String temp = prefix;
    if(SaveFormat == "MERLIN"){
       printf("Start writing reconstructed pedigrees in MERLIN format...\n");
       WriteMerlin();
    }
-   if(SaveFormat == "PLINK"){
+   if(SaveFormat == "PLINK" || WriteFlag){
       printf("Start writing reconstructed pedigrees in PLINK format...\n");
       temp.Add("build");
       WritePlinkBinary(temp);
@@ -647,20 +1678,19 @@ void Engine::rebuild()
       WriteKingBinary(temp);
    }
    printf("Pedigree reconstruction ends at %s", currentTime());
+   return built;
 }
 
 void Engine::rebuild_semifamily()
 {
    printf("Pedigree reconstruction starts at %s", currentTime());
    IntArray nofix(0);
-
    cAge = ped.covariateNames.SlowFind("AGE");
    if(cAge > -1)
       printf("Covariate %s is used for pedigree reconstruction.\n",
          (const char*)ped.covariateNames[cAge]);
    else
       printf("Age information not provided.\n");
-//   missingBase = 100000;
    for(missingBase=100000; ;missingBase += 100000){
       bool overlapFlag = false;
       for(int i = 0; i < ped.count; i++)
@@ -670,16 +1700,8 @@ void Engine::rebuild_semifamily()
          }
       if(!overlapFlag) break;
    }
-
-//   IntArray chrSeg;
-//   double totalLength;
-//   String segmessage;
    if(Bit64==64)
       PreSegment(/*chrSeg, totalLength, segmessage*/);
-
-//   if(errorrateCutoff == _NAN_)
-//      errorrateCutoff = 0.008;
-//   printf("Cutoff value to distinguish PO and FS is set at IBS0=%.4lf\n", errorrateCutoff);
    String updatefile = prefix;
    updatefile.Add("updateparents.txt");
    FILE *fp = fopen((const char*)updatefile, "wt");
@@ -698,8 +1720,7 @@ void Engine::rebuild_semifamily()
    }
    fclose(fp);
    printf("\n");
-   printf("Update-parent information is saved in file %s\n",
-      (const char*)updatefile);
+   printf("Update-parent information is saved in file %s\n", (const char*)updatefile);
 
    String temp = prefix;
    if(SaveFormat == "MERLIN"){
@@ -718,751 +1739,4 @@ void Engine::rebuild_semifamily()
    }
    printf("Pedigree reconstruction ends at %s", currentTime());
 }
-
-int Engine::BuildOneFamily(int f, IntArray chrSeg, double totalLength, String & message)
-{
-   message.Clear();
-   char buffer[256];
-
-   Family *pf = ped.families[f];
-   if(id[f].Length() < 2) return 0;
-
-   IntArray valid(pf->count);
-   valid.Set(1);
-   L0.Dimension(0);
-   Lfs.Dimension(0);
-   Lpo.Dimension(0);
-   L2.Dimension(0);
-   IntArray L3(0);
-   IntArray L4(0);
-   Matrix relationship(pf->count, pf->count);
-   relationship.Zero();
-   Kinship kin;
-   int id1, id2;
-   double kinship;
-   IntArray *poConnection, *d2Connection, *d3Connection;
-   int parent, offspring;
-
-   poConnection = new IntArray[pf->count];
-   d2Connection = new IntArray[pf->count];
-   d3Connection = new IntArray[pf->count];
-   for(int i = 0; i < pf->count; i++){
-      poConnection[i].Dimension(0);
-      d2Connection[i].Dimension(0);
-      d3Connection[i].Dimension(0);
-   }
-
-   IntArray pairs(0);
-   kin.Setup(*ped.families[f]);
-   for(int i = 0; i < id[f].Length(); i++)
-      for(int j = i+1; j < id[f].Length(); j++)
-         if(kin(ped[id[f][i]], ped[id[f][j]]) > 0)
-            relationship[id[f][i]-pf->first][id[f][j]-pf->first] =
-               relationship[id[f][j]-pf->first][id[f][i]-pf->first] =
-               kin(ped[id[f][i]], ped[id[f][j]]);
-         else{
-            pairs.Push(geno[id[f][i]]);
-            pairs.Push(geno[id[f][j]]);
-         }
-   int pairCount = pairs.Length()/2;
-   if(pairCount==0) return 0;
-   IntArray HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts, IBSCounts;
-   //****************************Compute kinship coefficient*****************************
-   if(Bit64==64)
-      KinshipInSubset64Bit(pairs, HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts, IBSCounts);
-   else
-      KinshipInSubset(pairs, HetHetCounts, IBS0Counts, het1Counts, het2Counts, HomHomCounts);
-   //****************************Compute kinship coefficient*****************************
-
-   Vector ibdprops, maxLengths, ibd2props, maxLengths2;
-   bool IBDvalidFlag = chrSeg.Length()>0;
-   if(IBDvalidFlag){
-      //****************Compute IBD2 Segments****************************
-      if(Bit64==64)
-         IBDSegInSubset64Bit(pairs, ibdprops, maxLengths, ibd2props, maxLengths2);
-      else
-         IBD2SegInSubset(pairs, ibd2props, maxLengths2);
-      //****************Compute IBD2 Segments****************************
-   }
-   for(int p = 0; p < pairCount; p++){
-      if(!het1Counts[p] && !het2Counts[p] && !HetHetCounts[p]) continue;
-      id1 = pairs[p*2]; id2 = pairs[p*2+1];
-      kinship = (HetHetCounts[p] - IBS0Counts[p]*2.0) / (HetHetCounts[p]*2+het1Counts[p]+het2Counts[p]);
-      relationship[phenoid[id1]-pf->first][phenoid[id2]-pf->first] =
-         relationship[phenoid[id2]-pf->first][phenoid[id1]-pf->first] = kinship;
-      double CHet = HetHetCounts[p] * 1.0 / (HetHetCounts[p]+het1Counts[p]+het2Counts[p]);
-      if(IBDvalidFlag){
-         double ibdprop = ibdprops[p];
-         double ibd2prop = ibd2props[p];
-         if(CHet<0.8){
-            double pi = ibd2prop + ibdprop * 0.5;
-            if(pi > 0.3535534){  // 1st-degree
-               if(ibdprop + ibd2prop > 0.96 || (ibdprop + ibd2prop > 0.9 && ibd2prop <= 0.08)){
-                  Lpo.Push(phenoid[id1]-pf->first); Lpo.Push(phenoid[id2]-pf->first);
-               }else if(ibd2prop > 0.15 || pi > 0.4){
-                  Lfs.Push(phenoid[id1]-pf->first); Lfs.Push(phenoid[id2]-pf->first);
-               }
-            }else if(pi > 0.1767767){  // 2nd-degree
-               if(ibd2prop < 0.08){
-                  L2.Push(phenoid[id1]-pf->first); L2.Push(phenoid[id2]-pf->first);
-                  d2Connection[phenoid[id1]-pf->first].Push(phenoid[id2]-pf->first);
-                  d2Connection[phenoid[id2]-pf->first].Push(phenoid[id1]-pf->first);
-               }
-            }else if(pi > 0.08838835){ // 3rd-degree
-               L3.Push(phenoid[id1]-pf->first); L3.Push(phenoid[id2]-pf->first);
-               d3Connection[phenoid[id1]-pf->first].Push(phenoid[id2]-pf->first);
-               d3Connection[phenoid[id2]-pf->first].Push(phenoid[id1]-pf->first);
-            }
-         }else{ // Duplicate
-            L0.Push(phenoid[id1]-pf->first); L0.Push(phenoid[id2]-pf->first);
-         }
-      }
-   }  // end of pairs
-
-   if(!L0.Length() && !Lpo.Length() && !Lfs.Length()) return 0;
-   sprintf(buffer, "Family %s:\n", (const char*)pf->famid);
-   message += buffer;
-
-   IntArray Lr = L0;
-   Lr.Stack(Lpo);
-   Lr.Stack(Lfs);
-   Lr.Stack(L2);
-   Lr.Stack(L3);
-   int fam1, fam2;
-   IntArray childCount(pf->count);
-   IntArray sibship[200];
-   int sibshipCount;
-   int s1, s2;
-   int fa, mo;
-   IntArray pat, mat;
-   int smaller, larger;
-   String tempS;
-
-   if(L0.Length()){
-   childCount.Zero();
-   for(int i = pf->first; i <= pf->last; i++){
-      if(ped[i].father) childCount[ped[i].father->serial-pf->first] ++;
-      if(ped[i].mother) childCount[ped[i].mother->serial-pf->first] ++;
-   }
-   for(int j = 0; j < L0.Length()/2; j++){
-      if(!valid[L0[j*2]] || !valid[L0[j*2+1]]) continue;
-      if(childCount[L0[j*2]] < childCount[L0[j*2+1]]){
-         id2 = L0[j*2]; // to be removed
-         id1 = L0[j*2+1];
-      }else if(childCount[L0[j*2+1]] < childCount[L0[j*2]]){
-         id1 = L0[j*2];
-         id2 = L0[j*2+1]; // to be removed
-      }else{
-         if(ped[L0[j*2]].sibCount <= 1 && ped[L0[j*2+1]].sibCount <= 1){
-            if(childCount[L0[j*2]] <= 1 && childCount[L0[j*2+1]] > 1){
-               id2 = L0[j*2]; id1 = L0[j*2+1];
-            }else if(childCount[L0[j*2]] > 1 && childCount[L0[j*2+1]] <= 1){
-               id2 = L0[j*2+1]; id1 = L0[j*2];
-            }else{
-               id2 = L0[j*2]; id1 = L0[j*2+1];
-            }
-         }else if(ped[L0[j*2]].sibCount < ped[L0[j*2+1]].sibCount){
-            id2 = L0[j*2]; id1 = L0[j*2+1];
-         }else if(ped[L0[j*2+1]].sibCount < ped[L0[j*2]].sibCount){
-            id2 = L0[j*2+1]; id1 = L0[j*2];
-         }else{
-            id2 = L0[j*2]; id1 = L0[j*2+1];
-         }
-      }
-      valid[id2] = 0;
-      sprintf(buffer, "  Duplicate %s (of %s) is removed.\n",
-         (const char*)ped[id2+pf->first].pid, (const char*)ped[id1+pf->first].pid);
-      message += buffer;
-      for(int i = pf->first; i <= pf->last; i++){
-         if(valid[i-pf->first] && ped[id2+pf->first].sex == 1 && ped[i].father && ped[i].father->serial==id2+pf->first){
-            ped[i].father = &ped[id1+pf->first];
-            ped[i].fatid = ped[id1+pf->first].pid;
-         }else if(valid[i-pf->first] && ped[id2+pf->first].sex == 2 && ped[i].mother && ped[i].mother->serial==id2+pf->first){
-            ped[i].mother = &ped[id1+pf->first];
-            ped[i].motid = ped[id1+pf->first].pid;
-         }
-      }
-      if(!ped[id1+pf->first].father && !ped[id1+pf->first].mother){
-         ped[id1+pf->first].father = ped[id2+pf->first].father;
-         ped[id1+pf->first].fatid = ped[id2+pf->first].fatid;
-         ped[id1+pf->first].mother = ped[id2+pf->first].mother;
-         ped[id1+pf->first].motid = ped[id2+pf->first].motid;
-      }
-   }
-   }
-
-   // FS
-   pat.Dimension(0); mat.Dimension(0);
-   sibshipCount = 0;
-   for(int i = pf->first; i <= pf->last; i++)
-      if(ped[i].sibCount > 1 && ped[i].sibs[0]->serial == i){
-         sibship[sibshipCount].Dimension(0);
-         for(int s = 0; s < ped[i].sibCount; s++)
-            if(valid[ped[i].sibs[s]->serial-pf->first])
-               sibship[sibshipCount].Push(ped[i].sibs[s]->serial-pf->first);
-         ped[i].sibCount = sibship[sibshipCount].Length();
-         if(ped[i].sibCount < 2) continue;
-         pat.Push(ped[i].father->serial-pf->first);
-         mat.Push(ped[i].mother->serial-pf->first);
-         sibshipCount++;
-      }
-   int newparent = 0;
-
-   for(int j = 0; j < Lfs.Length() / 2; j++){
-      if(valid[Lfs[j*2]] == 0 || valid[Lfs[j*2+1]] == 0) continue;
-      s1 = s2 = -1;
-      for(int k = 0; k < sibshipCount; k++){
-         if(sibship[k].Find(Lfs[j*2]) > -1) s1 = k;
-         if(sibship[k].Find(Lfs[j*2+1]) > -1) s2 = k;
-      }
-      fa = mo = -1;
-      if(ped[Lfs[j*2]+pf->first].father && valid[ped[Lfs[j*2]+pf->first].father->serial-pf->first]
-         && ped[Lfs[j*2+1]+pf->first].father && valid[ped[Lfs[j*2+1]+pf->first].father->serial-pf->first]){
-         if(ped[Lfs[j*2]+pf->first].father->ngeno > ped[Lfs[j*2+1]+pf->first].father->ngeno)
-            fa = ped[Lfs[j*2]+pf->first].father->serial;
-         else
-            fa = ped[Lfs[j*2+1]+pf->first].father->serial;
-      }else if(ped[Lfs[j*2]+pf->first].father && valid[ped[Lfs[j*2]+pf->first].father->serial-pf->first])
-         fa = ped[Lfs[j*2]+pf->first].father->serial;
-      else if(ped[Lfs[j*2+1]+pf->first].father && valid[ped[Lfs[j*2+1]+pf->first].father->serial-pf->first])
-         fa = ped[Lfs[j*2+1]+pf->first].father->serial;
-      if(ped[Lfs[j*2]+pf->first].mother && valid[ped[Lfs[j*2]+pf->first].mother->serial-pf->first]
-         && ped[Lfs[j*2+1]+pf->first].mother && valid[ped[Lfs[j*2+1]+pf->first].mother->serial-pf->first]){
-         if(ped[Lfs[j*2]+pf->first].mother->ngeno > ped[Lfs[j*2+1]+pf->first].mother->ngeno)
-            mo = ped[Lfs[j*2]+pf->first].mother->serial;
-         else
-            mo = ped[Lfs[j*2+1]+pf->first].mother->serial;
-      }else if(ped[Lfs[j*2]+pf->first].mother && valid[ped[Lfs[j*2]+pf->first].mother->serial-pf->first])
-         mo = ped[Lfs[j*2]+pf->first].mother->serial;
-      else if(ped[Lfs[j*2+1]+pf->first].mother && valid[ped[Lfs[j*2+1]+pf->first].mother->serial-pf->first])
-         mo = ped[Lfs[j*2+1]+pf->first].mother->serial;
-      if(s1 > -1 && s2 > -1){
-         if(s1==s2) continue;
-         // combine two sibships
-         if(s1 < s2) {
-            smaller=s1; larger=s2;
-         }else{
-            smaller=s2; larger=s1;
-         }
-         sprintf(buffer, "  Sibship (%s",
-            (const char*)ped[sibship[s1][0]+pf->first].pid);
-         message += buffer;
-         for(int s = 1; s < sibship[s1].Length(); s++){
-            sprintf(buffer, " %s", (const char*)ped[sibship[s1][s]+pf->first].pid);
-            message += buffer;
-         }
-         sprintf(buffer, ") and sibship (%s",
-            (const char*)ped[sibship[s2][0]+pf->first].pid);
-         message += buffer;
-         for(int s = 1; s < sibship[s2].Length(); s++){
-            sprintf(buffer, " %s", (const char*)ped[sibship[s2][s]+pf->first].pid);
-            message += buffer;
-         }
-         sprintf(buffer, ") are combined\n");
-         message += buffer;
-         sibship[smaller].Stack(sibship[larger]);
-         if(fa > -1)
-            pat[smaller] = fa-pf->first;
-         if(mo > -1)
-            mat[smaller] = mo-pf->first;
-         if(larger < sibshipCount-1){
-            sibship[larger] = sibship[sibshipCount-1];
-            pat[larger] = pat[sibshipCount-1];
-            mat[larger] = mat[sibshipCount-1];
-         }
-         sibshipCount--;
-         pat.Delete(sibshipCount);
-         mat.Delete(sibshipCount);
-      }else if(s1 > -1){ // fs2 join in sibship s1
-         sibship[s1].Push(Lfs[j*2+1]);
-         if(fa > -1) pat[s1] = fa-pf->first;
-         if(mo > -1) mat[s1] = mo-pf->first;
-         sprintf(buffer, "  %s joins in sibship (%s",
-            (const char*)ped[Lfs[j*2+1]+pf->first].pid,
-            (const char*)ped[sibship[s1][0]+pf->first].pid);
-         message += buffer;
-         for(int s = 1; s < sibship[s1].Length()-1; s++){
-            sprintf(buffer, " %s", (const char*)ped[sibship[s1][s]+pf->first].pid);
-            message += buffer;
-         }
-         sprintf(buffer, ")\n");
-         message += buffer;
-      }else if(s2 > -1){ // fs1 join in sibship s2
-         sibship[s2].Push(Lfs[j*2]);
-         if(fa > -1) pat[s2] = fa-pf->first;
-         if(mo > -1) mat[s2] = mo-pf->first;
-         sprintf(buffer, "  %s joins in sibship (%s",
-            (const char*)ped[Lfs[j*2]+pf->first].pid,
-            (const char*)ped[sibship[s2][0]+pf->first].pid);
-         message += buffer;
-         for(int s = 1; s < sibship[s2].Length()-1; s++){
-            sprintf(buffer, " %s", (const char*)ped[sibship[s2][s]+pf->first].pid);
-            message += buffer;
-         }
-         sprintf(buffer, ")\n");
-         message += buffer;
-      }else{
-         // create sibship
-         sibship[sibshipCount].Dimension(0);
-         sibship[sibshipCount].Push(Lfs[j*2]);
-         sibship[sibshipCount].Push(Lfs[j*2+1]);
-         sibshipCount++;
-
-         sprintf(buffer, "  Sibship (%s",
-            (const char*)ped[sibship[sibshipCount-1][0]+pf->first].pid);
-         message += buffer;
-         for(int s = 1; s < sibship[sibshipCount-1].Length(); s++){
-            sprintf(buffer, " %s", (const char*)ped[sibship[sibshipCount-1][s]+pf->first].pid);
-            message += buffer;
-         }
-         sprintf(buffer, ")'s parents are (");
-         message += buffer;
-         if(fa > -1){
-            pat.Push(fa-pf->first);
-            sprintf(buffer, "%s", (const char*)ped[fa].pid);
-            message += buffer;
-         }else{
-            pat.Push(missingBase + newparent);
-            inclusionList[0].Push(ped.families[f]->famid);
-            tempS = missingBase + newparent;
-            sprintf(buffer, "%s", (const char*)tempS);
-            message += buffer;
-            newparent++;
-            inclusionList[1].Push(tempS);
-            tempS = 1;
-            inclusionList[2].Push(tempS);
-         }
-         if(mo > -1){
-            mat.Push(mo-pf->first);
-            sprintf(buffer, " %s)\n", (const char*)ped[mo].pid);
-            message += buffer;
-         }else{
-            mat.Push(missingBase + newparent);
-            inclusionList[0].Push(ped.families[f]->famid);
-            tempS = missingBase + newparent;
-            sprintf(buffer, " %s)\n", (const char*)tempS);
-            message += buffer;
-            newparent++;
-            inclusionList[1].Push(tempS);
-            tempS = 2;
-            inclusionList[2].Push(tempS);
-         }
-      }
-   }
-   for(int j = 0; j < sibshipCount; j++){
-      // KING -> newparent
-      if(pat[j] < missingBase && mat[j] < missingBase
-         && pat[j] > -1 && mat[j] > -1){
-         if(ped[pat[j]+pf->first].pid.SubStr(0, 4)=="KING" && ped[pat[j]+pf->first].ngeno==0){
-            ped[pat[j]+pf->first].pid = missingBase + newparent;
-            newparent ++;
-         }
-         if(ped[mat[j]+pf->first].pid.SubStr(0, 4)=="KING" && ped[mat[j]+pf->first].ngeno==0){
-            ped[mat[j]+pf->first].pid = missingBase + newparent;
-            newparent ++;
-         }
-      }
-      for(int k = 0; k < sibship[j].Length(); k++)
-         if(pat[j] < missingBase && mat[j] < missingBase
-            && pat[j] > -1 && mat[j] > -1){
-            ped[sibship[j][k]+pf->first].father = &ped[pat[j]+pf->first];
-            ped[sibship[j][k]+pf->first].mother = &ped[mat[j]+pf->first];
-            ped[sibship[j][k]+pf->first].fatid = ped[pat[j]+pf->first].pid;
-            ped[sibship[j][k]+pf->first].motid = ped[mat[j]+pf->first].pid;
-         }else{
-            ped[sibship[j][k]+pf->first].fatid = pat[j];
-            ped[sibship[j][k]+pf->first].motid = mat[j];
-         }
-
-   }
-   // parent-offspring
-   for(int j = 0; j < Lpo.Length() / 2; j++){
-      if(valid[Lpo[j*2]]==0 || valid[Lpo[j*2+1]] == 0) continue;
-      if(ped[Lpo[j*2]+pf->first].fatid == ped[Lpo[j*2+1]+pf->first].pid ||
-         ped[Lpo[j*2]+pf->first].motid == ped[Lpo[j*2+1]+pf->first].pid ||
-         ped[Lpo[j*2+1]+pf->first].fatid == ped[Lpo[j*2]+pf->first].pid ||
-         ped[Lpo[j*2+1]+pf->first].motid == ped[Lpo[j*2]+pf->first].pid) continue;
-      sprintf(buffer, "  Reconstruct parent-offspring pair (%s, %s)...\n",
-         (const char*)ped[Lpo[j*2]+pf->first].pid,
-         (const char*)ped[Lpo[j*2+1]+pf->first].pid);
-      message += buffer;
-      s1 = s2 = -1;
-      for(int k = 0; k < sibshipCount; k++){
-         if(sibship[k].Find(Lpo[j*2]) > -1) s1 = k;
-         if(sibship[k].Find(Lpo[j*2+1]) > -1) s2 = k;
-      }
-      parent = -1;
-      offspring = -1;
-      int sibshiplist = -1;
-      if(s1 == -1 && s2 == -1){ // singletons
-         if(ped[Lpo[j*2]+pf->first].sex == 1 && ped[Lpo[j*2+1]+pf->first].father
-            && valid[ped[Lpo[j*2+1]+pf->first].father->serial-pf->first]
-            && ped[Lpo[j*2+1]+pf->first].father->ngeno >= MINSNPCOUNT){
-            // j*2 is a male and j*2+1 has a father then j*2+1 is parent of j*2
-               parent = Lpo[j*2+1];
-               offspring = Lpo[j*2];
-         }else if(ped[Lpo[j*2]+pf->first].sex == 1 && ped[Lpo[j*2+1]+pf->first].mother
-            && valid[ped[Lpo[j*2+1]+pf->first].mother->serial-pf->first]
-            && ped[Lpo[j*2+1]+pf->first].mother->ngeno >= MINSNPCOUNT ){
-            // check kinship between Lpo[j*2] and mother
-               for(int k = 0; k < Lr.Length()/2; k++)
-                  if( (Lpo[j*2] == Lr[k*2]
-                  && ped[Lpo[j*2+1]+pf->first].mother->serial == Lr[k*2+1]+pf->first) ||
-                  (Lpo[j*2] == Lr[k*2+1]
-                  && ped[Lpo[j*2+1]+pf->first].mother->serial == Lr[k*2]+pf->first) ){
-                     parent = Lpo[j*2+1];
-                     offspring = Lpo[j*2];
-                     break;
-                  }
-               if(parent == -1){ // Lpo[j*2] and mother are unrelated
-                  parent = Lpo[j*2];
-                  offspring = Lpo[j*2+1];
-               }
-         }else if(ped[Lpo[j*2]+pf->first].sex == 2 && ped[Lpo[j*2+1]+pf->first].mother
-            && valid[ped[Lpo[j*2+1]+pf->first].mother->serial-pf->first]
-            && ped[Lpo[j*2+1]+pf->first].mother->ngeno >= MINSNPCOUNT){
-            // j*2 is a female and j*2+1 has a mother then j*2+1 is parent of j*2
-               parent = Lpo[j*2+1];
-               offspring = Lpo[j*2];
-         }else if(ped[Lpo[j*2]+pf->first].sex == 2 && ped[Lpo[j*2+1]+pf->first].father
-            && valid[ped[Lpo[j*2+1]+pf->first].father->serial-pf->first]
-            && ped[Lpo[j*2+1]+pf->first].father->ngeno >= MINSNPCOUNT ){
-            // check kinship between Lpo[j*2] and father
-               for(int k = 0; k < Lr.Length()/2; k++)
-                  if( (Lpo[j*2] == Lr[k*2] &&
-                     ped[Lpo[j*2+1]+pf->first].father->serial == Lr[k*2+1]+pf->first) ||
-                     (Lpo[j*2] == Lr[k*2+1]
-                     && ped[Lpo[j*2+1]+pf->first].father->serial == Lr[k*2]+pf->first) ){
-                        parent = Lpo[j*2+1];
-                        offspring = Lpo[j*2];
-                        break;
-                     }
-               if(parent == -1){ // Lpo[j*2] and father are unrelated
-                  parent = Lpo[j*2];
-                  offspring = Lpo[j*2+1];
-               }
-         }else if(ped[Lpo[j*2+1]+pf->first].sex == 1
-            && ped[Lpo[j*2]+pf->first].father
-            && valid[ped[Lpo[j*2]+pf->first].father->serial-pf->first]
-            && ped[Lpo[j*2]+pf->first].father->ngeno >= MINSNPCOUNT){
-            // j*2+1 is a male and j*2 has a father then j*2 is parent of j*2+1
-               parent = Lpo[j*2];
-               offspring = Lpo[j*2+1];
-         }else if(ped[Lpo[j*2+1]+pf->first].sex == 1
-            && ped[Lpo[j*2]+pf->first].father
-            && ped[Lpo[j*2]+pf->first].mother && valid[ped[Lpo[j*2]+pf->first].mother->serial-pf->first]
-            && ped[Lpo[j*2]+pf->first].mother->ngeno >= MINSNPCOUNT ){
-            // check kinship between Lpo[j*2+1] and mother
-               for(int k = 0; k < Lr.Length()/2; k++)
-                  if( (Lpo[j*2+1] == Lr[k*2]
-                     && ped[Lpo[j*2]+pf->first].mother->serial == Lr[k*2+1]+pf->first) ||
-                     (Lpo[j*2+1] == Lr[k*2+1]
-                     && ped[Lpo[j*2]+pf->first].mother->serial == Lr[k*2]+pf->first) ){
-                        parent = Lpo[j*2];
-                        offspring = Lpo[j*2+1];
-                        break;
-                     }
-               if(parent == -1){ // Lpo[j*2+1] and mother are unrelated
-                  parent = Lpo[j*2+1];
-                  offspring = Lpo[j*2];
-               }
-         }else if(ped[Lpo[j*2+1]+pf->first].sex == 2 && ped[Lpo[j*2]+pf->first].mother
-            && valid[ped[Lpo[j*2]+pf->first].mother->serial-pf->first]
-            && ped[Lpo[j*2]+pf->first].mother->ngeno >= MINSNPCOUNT){
-            // j*2+1 is a female and j*2 has a mother then j*2 is parent of j*2+1
-               parent = Lpo[j*2];
-               offspring = Lpo[j*2+1];
-         }else if(ped[Lpo[j*2+1]+pf->first].sex == 2 && ped[Lpo[j*2]+pf->first].mother
-            && ped[Lpo[j*2]+pf->first].father && valid[ped[Lpo[j*2]+pf->first].father->serial-pf->first]
-            && ped[Lpo[j*2]+pf->first].father->ngeno >= MINSNPCOUNT ){
-            // check kinship between Lpo[j*2+1] and father
-               for(int k = 0; k < Lr.Length()/2; k++)
-                  if( (Lpo[j*2+1] == Lr[k*2]
-                  && ped[Lpo[j*2]+pf->first].father->serial == Lr[k*2+1]+pf->first) ||
-                  (Lpo[j*2+1] == Lr[k*2+1]
-                  && ped[Lpo[j*2]+pf->first].father->serial == Lr[k*2]+pf->first) ){
-                     parent = Lpo[j*2];
-                     offspring = Lpo[j*2+1];
-                     break;
-                  }
-               if(parent == -1){ // Lpo[j*2+1] and father are unrelated
-                  parent = Lpo[j*2+1];
-                  offspring = Lpo[j*2];
-               }
-         }else{   // none of the PO pair has known parents
-            for(int k = 0; k < d2Connection[Lpo[j*2]].Length(); k++)
-               if(relationship[Lpo[j*2+1]][d2Connection[Lpo[j*2]][k]] < 0.0375){
-                  // Lpo[j*2+1] and Lpo[j*2]'s relative are unrelated
-                  parent = Lpo[j*2+1];  // then Lpo[j*2+1] is the parent
-                  offspring = Lpo[j*2];
-               }
-            for(int k = 0; k < d2Connection[Lpo[j*2+1]].Length(); k++)
-               if(relationship[Lpo[j*2]][d2Connection[Lpo[j*2+1]][k]] < 0.0375){
-                  // Lpo[j*2] and Lpo[j*2+1]'s relative are unrelated
-                  parent = Lpo[j*2];  // then Lpo[j*2] is the parent
-                  offspring = Lpo[j*2+1];
-               }
-            if(parent==-1){// Age information should be used here
-               // Whoever older is the parent
-               // otherwise if age is unknown
-               if(cAge == -1 || ped[Lpo[j*2]+pf->first].covariates[cAge] == _NAN_ ||
-                  ped[Lpo[j*2+1]+pf->first].covariates[cAge] == _NAN_){
-                  poConnection[Lpo[j*2]].Push(Lpo[j*2+1]);
-                  poConnection[Lpo[j*2+1]].Push(Lpo[j*2]);
-               }else{// Age helps here
-                  if(ped[Lpo[j*2]+pf->first].covariates[cAge] > ped[Lpo[j*2+1]+pf->first].covariates[cAge]+10){
-                     parent = Lpo[j*2];
-                     offspring = Lpo[j*2+1];
-                     sprintf(buffer, "  Age information is used\n");
-                     message += buffer;
-                  }else if(ped[Lpo[j*2+1]+pf->first].covariates[cAge] > ped[Lpo[j*2]+pf->first].covariates[cAge]+10){
-                     parent = Lpo[j*2+1];
-                     offspring = Lpo[j*2];
-                     sprintf(buffer, "  Age information is used\n");
-                     message += buffer;
-                  }else{
-                     poConnection[Lpo[j*2]].Push(Lpo[j*2+1]);
-                     poConnection[Lpo[j*2+1]].Push(Lpo[j*2]);
-                  }
-               }
-            }
-         }
-      }else if(s1 > -1){   // check if Lpo[j*2+1] is P or O
-         int r = sibship[s1].Find(Lpo[j*2]);
-         int t = (r==0? 1: 0);
-         for(int k = 0; k < Lpo.Length()/2; k++)
-            if( (Lpo[k*2+1]==Lpo[j*2+1] && Lpo[k*2]==sibship[s1][t]) ||
-               (Lpo[k*2]==Lpo[j*2+1] && Lpo[k*2+1]==sibship[s1][t]) )
-               parent = Lpo[j*2+1];
-         if(parent == -1){// Lpo[j*2+1] is offspring of Lpo[j*2]
-            parent = Lpo[j*2];
-            offspring = Lpo[j*2+1];
-         }else // Lpo[j*2+1] is the parent
-            sibshiplist = s1;
-         sprintf(buffer, "  %s's sibship is used to determine the parent/offspring\n",
-            (const char*)ped[Lpo[j*2]+pf->first].pid);
-         message += buffer;
-      }else if(s2 > -1){   // check if Lpo[j*2] is P or O
-         int r = sibship[s2].Find(Lpo[j*2+1]);
-         int t = (r==0? 1: 0);
-         for(int k = 0; k < Lpo.Length()/2; k++)
-            if( (Lpo[k*2+1]==Lpo[j*2] && Lpo[k*2]==sibship[s2][t]) ||
-            (Lpo[k*2]==Lpo[j*2] && Lpo[k*2+1]==sibship[s2][t]) )
-               parent = Lpo[j*2];
-         if(parent == -1){// Lpo[j*2] is offspring of Lpo[j*2+1]
-            parent = Lpo[j*2+1];
-            offspring = Lpo[j*2];
-         }else
-            sibshiplist = s2;
-         sprintf(buffer, "  %s's sibship is used to determine the parent/offspring\n",
-            (const char*)ped[Lpo[j*2+1]+pf->first].pid);
-         message += buffer;
-      }
-      if(parent == -1) {
-         if(cAge == -1 || ped[Lpo[j*2]+pf->first].covariates[cAge] == _NAN_ ||
-            ped[Lpo[j*2+1]+pf->first].covariates[cAge] == _NAN_)
-            continue;
-         // Age helps here
-         if(ped[Lpo[j*2]+pf->first].covariates[cAge] > ped[Lpo[j*2+1]+pf->first].covariates[cAge]+10){
-            parent = Lpo[j*2];
-            offspring = Lpo[j*2+1];
-            sprintf(buffer, "  Information of covariate %s is used\n",
-               (const char*)ped.covariateNames[cAge]);
-            message += buffer;
-         }else if(ped[Lpo[j*2+1]+pf->first].covariates[cAge] > ped[Lpo[j*2]+pf->first].covariates[cAge]+10){
-            parent = Lpo[j*2+1];
-            offspring = Lpo[j*2];
-            sprintf(buffer, "  Information of covariate %s is used\n",
-                (const char*)ped.covariateNames[cAge]);
-            message += buffer;
-         }else
-            continue;
-      }
-      if(ped[parent+pf->first].sex == 1){
-         if(offspring > -1){
-            tempS = ped[offspring+pf->first].fatid;
-            if(tempS == "0")
-               sprintf(buffer, "  %s is now father of %s\n",
-               (const char*)ped[parent+pf->first].pid, (const char*)ped[offspring+pf->first].pid);
-            else
-               sprintf(buffer, "  %s is now father of %s, replacing %s (%d genotypes)\n",
-                  (const char*)ped[parent+pf->first].pid,
-                  (const char*)ped[offspring+pf->first].pid,
-                  (const char*)tempS,
-                  ped[offspring+pf->first].father ?
-                  ped[ped[offspring+pf->first].father->serial].ngeno: 0);
-            message += buffer;
-            ped[offspring+pf->first].fatid = ped[parent+pf->first].pid;
-            ped[offspring+pf->first].father = &ped[parent+pf->first];
-            if(ped[offspring+pf->first].motid=="0"){
-               inclusionList[0].Push(ped.families[f]->famid);
-               tempS = missingBase + newparent;
-               sprintf(buffer, "    %s is created as %s's mother.\n",
-                  (const char*)tempS, (const char*)ped[offspring+pf->first].pid);
-               message += buffer;
-               ped[offspring+pf->first].motid = tempS;
-               newparent++;
-               inclusionList[1].Push(tempS);
-               tempS = 2;
-               inclusionList[2].Push(tempS);
-            }
-         }else{
-            tempS = ped[sibship[sibshiplist][0]+pf->first].fatid;
-            if(tempS == "0")
-               sprintf(buffer, "  %s is now father of %s's sibship\n",
-                  (const char*)ped[parent+pf->first].pid,
-                  (const char*)ped[sibship[sibshiplist][0]+pf->first].pid);
-            else
-               sprintf(buffer, "  %s is now father of %s's sibship, replacing %s (%d genotypes)\n",
-                  (const char*)ped[parent+pf->first].pid,
-                  (const char*)ped[sibship[sibshiplist][0]+pf->first].pid,
-                  (const char*)tempS,
-                  ped[sibship[sibshiplist][0]+pf->first].father?
-                  ped[ped[sibship[sibshiplist][0]+pf->first].father->serial].ngeno: 0);
-            message += buffer;
-            for(int k = 0; k < sibship[sibshiplist].Length(); k++){
-               ped[sibship[sibshiplist][k]+pf->first].fatid = ped[parent+pf->first].pid;
-               ped[sibship[sibshiplist][k]+pf->first].father = &ped[parent+pf->first];
-            }
-         }
-      }else{
-         if(offspring > -1){
-            tempS = ped[offspring+pf->first].motid;
-            if(tempS == "0")
-               sprintf(buffer, "  %s is now mother of %s\n",
-               (const char*)ped[parent+pf->first].pid, (const char*)ped[offspring+pf->first].pid);
-            else
-               sprintf(buffer, "  %s is now mother of %s, replacing %s (%d genotypes)\n",
-                  (const char*)ped[parent+pf->first].pid,
-                  (const char*)ped[offspring+pf->first].pid,
-                  (const char*)tempS,
-                  ped[offspring+pf->first].mother?
-                  ped[ped[offspring+pf->first].mother->serial].ngeno:0);
-            message += buffer;
-            ped[offspring+pf->first].motid = ped[parent+pf->first].pid;
-            ped[offspring+pf->first].mother = &ped[parent+pf->first];
-            if(ped[offspring+pf->first].fatid=="0"){
-               inclusionList[0].Push(ped.families[f]->famid);
-               tempS = missingBase + newparent;
-               sprintf(buffer, "    %s is created as %s's father.\n",
-                  (const char*)tempS, (const char*)ped[offspring+pf->first].pid);
-               message += buffer;
-               ped[offspring+pf->first].fatid = tempS;
-               newparent++;
-               inclusionList[1].Push(tempS);
-               tempS = 1;
-               inclusionList[2].Push(tempS);
-            }
-         }else{
-            tempS = ped[sibship[sibshiplist][0]+pf->first].motid;
-            if(tempS == "0")
-               sprintf(buffer, "  %s is now mother of %s's sibship\n",
-                  (const char*)ped[parent+pf->first].pid,
-                  (const char*)ped[sibship[sibshiplist][0]+pf->first].pid);
-            else
-               sprintf(buffer, "  %s is now mother of %s's sibship, replacing %s (%d genotypes)\n",
-                  (const char*)ped[parent+pf->first].pid,
-                  (const char*)ped[sibship[sibshiplist][0]+pf->first].pid,
-                  (const char*)tempS,
-                  ped[sibship[sibshiplist][0]+pf->first].mother?
-                  ped[ped[sibship[sibshiplist][0]+pf->first].mother->serial].ngeno:0);
-            message += buffer;
-            for(int k = 0; k < sibship[sibshiplist].Length(); k++){
-               ped[sibship[sibshiplist][k]+pf->first].motid = ped[parent+pf->first].pid;
-               ped[sibship[sibshiplist][k]+pf->first].mother = &ped[parent+pf->first];
-            }
-         }
-      }
-   }
-   for(int i = 0; i < pf->count; i++){
-      int couple1 = -1; int couple2 = -1;
-      for(int j = 0; j < poConnection[i].Length(); j++)
-         for(int k = j+1; k < poConnection[i].Length(); k++)
-            if(relationship[poConnection[i][j]][poConnection[i][k]] < 0.0625){
-               // two PO are unrelated
-               if(ped[poConnection[i][j]+pf->first].sex==1){
-                  couple1 = poConnection[i][j];
-                  couple2 = poConnection[i][k];
-               }else{
-                  couple1 = poConnection[i][k];
-                  couple2 = poConnection[i][j];
-               }
-            }
-      if(couple1 > -1){ // two parents identified
-            ped[i+pf->first].fatid = ped[couple1+pf->first].pid;
-            ped[i+pf->first].motid = ped[couple2+pf->first].pid;
-            sprintf(buffer, "  %s and %s are %s's parents\n",
-               (const char*)ped[i+pf->first].fatid,
-               (const char*)ped[i+pf->first].motid,
-               (const char*)ped[i+pf->first].pid);
-            message += buffer;
-            for(int k = 0; k < poConnection[i].Length(); k++){
-               if(poConnection[i][k] == couple1 || poConnection[i][k] == couple2)
-                  continue;
-               if(ped[i+pf->first].sex == 1)
-                  ped[poConnection[i][k] + pf->first].fatid = i;
-               else
-                  ped[poConnection[i][k] + pf->first].motid = i;
-            }
-      }else if(d2Connection[i].Length()){
-         for(int k = 0; k < poConnection[i].Length(); k++)
-            if(relationship[d2Connection[i][0]][poConnection[i][k]] > 0.0375 &&
-               relationship[d2Connection[i][0]][poConnection[i][k]] < 0.0884){
-                  parent = i;
-                  offspring = poConnection[i][k];
-                  if(ped[i+pf->first].sex == 1){
-                     ped[offspring + pf->first].fatid = ped[parent+pf->first].pid;
-                     sprintf(buffer, "  %s is now father of %s\n",
-                        (const char*)ped[parent+pf->first].pid,
-                        (const char*)ped[offspring+pf->first].pid);
-                     message += buffer;
-                     if(ped[poConnection[i][k] + pf->first].motid=="0"){
-                        inclusionList[0].Push(ped.families[f]->famid);
-                        tempS = missingBase + newparent;
-                        sprintf(buffer, "    %s is created as %s's mother.\n",
-                        (const char*)tempS, (const char*)ped[offspring+pf->first].pid);
-                        message += buffer;
-                        ped[offspring+pf->first].motid = tempS;
-                        newparent++;
-                        inclusionList[1].Push(tempS);
-                        tempS = 2;
-                        inclusionList[2].Push(tempS);
-                     }
-                  }else{
-                     ped[offspring + pf->first].motid = ped[parent+pf->first].pid;
-                     sprintf(buffer, "  %s is now mother of %s\n",
-                        (const char*)ped[parent+pf->first].pid,
-                        (const char*)ped[offspring+pf->first].pid);
-                     message += buffer;
-                     if(ped[poConnection[i][k] + pf->first].fatid=="0"){
-                        inclusionList[0].Push(ped.families[f]->famid);
-                        tempS = missingBase + newparent;
-                        sprintf(buffer, "    %s is created as %s's father.\n",
-                        (const char*)tempS, (const char*)ped[offspring+pf->first].pid);
-                        message += buffer;
-                        ped[offspring+pf->first].fatid = tempS;
-                        newparent++;
-                        inclusionList[1].Push(tempS);
-                        tempS = 1;
-                        inclusionList[2].Push(tempS);
-                     }
-                  }  // end of if sex
-         }
-      }  // end of if there are two parents
-   }  // end of loop over each person
-   for(int i = pf->first; i <= pf->last; i++)
-      if(!valid[i-pf->first]){
-         tempS = ped[i].famid;
-         tempS += "->";// '->'
-         tempS += ped[i].pid;
-         exclusionList.Push(tempS);
-      }
-
-   delete []poConnection;
-   delete []d2Connection;
-   delete []d3Connection;
-   missingBase += newparent;
-   return 1;
-}
-
 

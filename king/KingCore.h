@@ -41,7 +41,6 @@ class KingEngine{
       unsigned short int *shortFlip;
       char oneCount[256];
       IntArray *id;
-      int idCount;
       IntArray geno;
       IntArray phenoid;
       int shortCount;
@@ -58,14 +57,13 @@ class KingEngine{
       Matrix covariates;
 
       StringArray snpName;
-      IntArray chromosomes;
-      Vector positions;
+      IntArray chromosomes, bp;
       StringArray alleleLabel[2];
       IntArray sortedSNP;
 
       unsigned short int **XG[2];
       StringArray xalleleLabel[2];
-      Vector xpositions;
+      IntArray xbp;
       StringArray xsnpName;
       int xshortCount;
       int xmarkerCount;
@@ -75,23 +73,25 @@ class KingEngine{
       StringArray ysnpName;
       unsigned short int **YG[2];
       StringArray yalleleLabel[2];
-      Vector ypositions;
+      IntArray ybp;
 
       int mtmarkerCount;
       int mtshortCount;
       StringArray mtsnpName;
       unsigned short int **MG[2];
       StringArray mtalleleLabel[2];
-      Vector mtpositions;
+      IntArray mtbp;
 
       void MakePed(void);
       void autoflip(void);
-//      void FlipInDuplicate(void);
       void AfterBinaryLoaded(void);
+
    public:
+      int idCount;
+
       unsigned int allflags;
       StringArray exclusionList;
-      StringArray inclusionList[3];
+      StringArray inclusionList[5];
       bool diagFlag;
       bool detailFlag;
       bool shortFlag;
@@ -107,7 +107,7 @@ class KingEngine{
       bool freqLoaded;
       bool individualInfo;
       bool QCwipe;
-      IntArray L0, Lpo, Lfs, L2/*, L3*/, Ltrio;
+      IntArray L0, Lpo, Lfs, L2, Ltrio;
       double errorrateCutoff;
       bool autoflipFlag;
       bool flipFlag;
@@ -115,7 +115,6 @@ class KingEngine{
       bool familyFlag;
       bool pedstatFlag;
       bool bigdataFlag;
-//      Vector HetBySample;
       QuickIndex bigdataIdx;
       int veryrareCount;
       bool autosomeOnly;
@@ -135,29 +134,26 @@ class KingEngine{
       ~KingEngine();
 
       void BuildBinary();
-//      void ReadBinaryData(const char *);
       void runKING();
       void WriteKingBinary(const char*);
       void WritePlinkBinary(const char*);
       void DumpBinary(const char*);
 
       void BuildShortBinary();
-//      void ReadBinaryShortData(const char *);
-//      void ReadPlinkBinaryData(const char *);
       void ReadKingBinaryData(const char *);
 
       void ConvertGGtoSG(unsigned short int **oldG[2], int oldCount, unsigned short int **newG[2], int newCount);
       void ConvertLGtoSLG(unsigned long long int **oldG[2], int oldCount, unsigned long long int **newG[2], int newCount);
-      void ConvertMajorFromSNPtoIndividual();
-      void ConvertMajorFromSNPtoIndividual64Bit();
+      void ConvertMajorFromSNPtoIndividual(unsigned char **localG_SNP, unsigned short int **localGG[], int localidcount, int startPos, int stopPos);
+      void ConvertMajorFromSNPtoIndividual64Bit(unsigned char **localG_SNP, unsigned long long int **localLG[], int localidCount, int startPos, int stopPos);
 
       void ReadPlinkBinaryBigData(const char *filename, const char *famfile=NULL, const char *bimfile=NULL, const char *covfile=NULL, const char *phefile=NULL);
       void ReadPlinkBinaryBigDataSNPMajor(const char *, const char*, const char *famfile=NULL, const char *bimfile=NULL, const char *covfile=NULL, const char *phefile=NULL);
-      void ReadPlinkBinaryBigDataWithLessMemory(const char *, const char *famfile=NULL, const char *bimfile=NULL, const char *covfile=NULL, const char *phefile=NULL);
       void ReadPlinkPedFile(const char *, const char *famfile=NULL);
       void ReadPlinkCovFile(const char *, const char *covfile=NULL);
       void ReadPlinkTraitFile(const char *, const char *phefile=NULL);
       void ReadPlinkMapFile(const char *, IntArray &, const char *bimfile=NULL);
+      void ReadMultiplePlinkBinaryBigData(const char *filename, const char *famfile=NULL, const char *bimfile=NULL, const char *covfile=NULL, const char *phefile=NULL);
 
       void ComputeAlleleFrequency64Bit(IntArray &AACounts, IntArray &AaCounts, IntArray &missingCounts, int wordcount=0);
       void ComputeMZBySNP64Bit(IntArray &nonmissingMZCounts, IntArray &ibs1MZCounts, IntArray &HetHetMZCounts, IntArray &ibs0MZCounts);
@@ -167,10 +163,15 @@ class KingEngine{
       void ComputeAlleleFrequencyInX(Vector &frequencies);
       void GenotypeCount64Bit(char genobit, int wordstart, int wordstop, int *genocount, unsigned long long int *words);
 
-      void ReadMultiplePlinkBinaryBigData(const char *);
       char *currentTime();
 };
-
 #endif
 
+
+//      void FlipInDuplicate(void);
+//      void ReadBinaryData(const char *);
+//      void ReadBinaryShortData(const char *);
+//      void ReadPlinkBinaryData(const char *);
+//      void ReadPlinkBinaryBigDataWithLessMemory(const char *, const char *famfile=NULL, const char *bimfile=NULL, const char *covfile=NULL, const char *phefile=NULL);
+//      Vector HetBySample;
 

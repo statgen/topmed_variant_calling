@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
 // autoQC.cpp
-// (c) 2010-2017 Wei-Min Chen
+// (c) 2010-2019 Wei-Min Chen
 //
 // This file is distributed as part of the KING source code package
 // and may not be redistributed in any form, without prior written
@@ -12,11 +12,12 @@
 //
 // All computer programs have bugs. Use this file at your own risk.
 //
-// April 30, 2017
+// March 6, 2019
 
 #include "analysis.h"
 #include "Kinship.h"
 #include "QuickIndex.h"
+#include "rplot.h"
 #ifdef _OPENMP
   #include <omp.h>
 #endif
@@ -273,7 +274,8 @@ void Engine::autoQC(double samplecallrate, double snpcallrate)
       printf("  %d samples have additional gender errors (according to X-Chr heterozygosity filter %.3lf)\n",
          gendererror.Length(), xHeterozygosity);
       printf("  Genders of %d samples are not reported but will be inferred now\n", updatesex.Length()/2);
-      plotGenderError(plotx_ysnpcount, ploty_xhet, plotz_sex, xHeterozygosity, maleerror.Length()+femaleerror.Length());
+      if(rplotFlag)
+         plotGenderError(prefix, plotx_ysnpcount, ploty_xhet, plotz_sex, xHeterozygosity, maleerror.Length()+femaleerror.Length());
 
       for(int i = 0; i < maleerror.Length(); i++)
          fprintf(fp2, "%s\t%s\tMislabeledAsMale\n",

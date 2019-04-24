@@ -1,6 +1,6 @@
-////////////////////////////////////////////////////////////////////// 
+//////////////////////////////////////////////////////////////////////
 // structure.cpp
-// (c) 2010-2018 Wei-Min Chen
+// (c) 2010-2019 Wei-Min Chen
 //
 // This file is distributed as part of the KING source code package
 // and may not be redistributed in any form, without prior written
@@ -12,7 +12,7 @@
 //
 // All computer programs have bugs. Use this file at your own risk.
 //
-// August 7, 2018
+// Feb 27, 2019
 
 #include "analysis.h"
 #include <math.h>
@@ -33,8 +33,227 @@ extern "C" void dgesvd_(char*, char*, int*, int*, double*, int*, double*, double
 // SUBROUTINE DGESVD( JOBU, JOBVT, M, N,	A, LDA,	S, U, LDU, VT, LDVT, WORK, LWORK, INFO )
 #endif
 
+void Engine::mds_projection()
+{
+   if(Bit64!=64){printf("Only available for 64-bit system.\n"); return;}
+   printf("\nOptions in effect:\n");
+   printf("\t--mds\n");
+   printf("\t--projection\n");
+   if(Bit64Flag)
+      printf("\t--sysbit 64\n");
+   if(CoreCount)
+      printf("\t--cpus %d\n", CoreCount);
+   if(prefix!="king")
+      printf("\t--prefix %s\n", (const char*)prefix);
+   printf("\n");
+
+   printf("MDS projection starts at %s", currentTime());
+   IntArray ID_AFF(0), ID_UN(0);
+   for(int i = 0; i < idCount; i++){
+      int id = phenoid[i];
+      if(ped[id].ngeno >= MINSNPCOUNT){
+         if(ped[id].affections[0]!=2)
+            ID_UN.Push(i);
+         else
+            ID_AFF.Push(i);
+      }
+   }
+   int dimN = ID_UN.Length();
+   if(dimN < 2) {
+      printf("The number of unaffected individuals is < 2.\n");
+      return;
+   }
+   int validCount = dimN + ID_AFF.Length();
+   IntArray *counts = new IntArray [dimN];
+   for(int i = 0; i < dimN; i++)
+      counts[i].Dimension(dimN);
+   printf("Preparing matrix (%d x %d) for MDS...\n", dimN, dimN);
+   ComputeInnerProduct64Bit(ID_UN, counts);
+   Matrix D(dimN, dimN);
+   for(int i = 0; i < dimN; i++)
+      for(int j = 0; j < dimN; j++)
+         D[i][j] = counts[i][j];
+   Vector tempV(dimN);
+   // (I-11'/N) * D
+   for(int j = 0; j < dimN; j++){
+      double sum = 0;
+      for(int i = 0; i < dimN; i++)
+         sum += D[i][j];
+      tempV[j] = sum / dimN;
+   }
+   for(int i = 0; i < dimN; i++)
+      for(int j = 0; j < dimN; j++)
+         D[i][j] -= tempV[j];
+   // D * (I-11'/N)
+   for(int i = 0; i < dimN; i++){
+      double sum = 0;
+      for(int j = 0; j < dimN; j++)
+         sum += D[i][j];
+      tempV[i] = sum / dimN;
+   }
+   for(int i = 0; i < dimN; i++)
+      for(int j = 0; j < dimN; j++)
+         D[i][j] -= tempV[i];
+   printf("SVD starts at %s", currentTime()); fflush(stdout);
+   int dimPC = dimN>20?20:dimN;
+   Matrix EV(validCount, dimPC);
+   Matrix rightMatrix(dimN, dimPC);
+#ifdef WITH_LAPACK
+   printf("  LAPACK is being used...\n"); fflush(stdout);
+   char JOBZ = 'A';
+   int info;
+   double *A = new double[dimN*dimN];
+   int dimLA = dimN;
+   for(int i = 0; i < dimN; i++)
+     for(int j = 0; j < dimN; j++)
+       A[i*dimN+j] = D[j][i];
+   double *S = new double[dimN];
+   double *U = new double[dimN*dimN];
+   double *VT = new double[dimN*dimN];
+   int *IWORK = new int[dimN*8];
+   int LWORK = 8*dimN + 4*dimN*dimN;
+   double *WORK = new double[LWORK];
+   dgesdd_(&JOBZ, &dimLA, &dimLA, A, &dimLA, S, U, &dimLA, VT, &dimLA, WORK, &LWORK, IWORK, &info);
+   delete []U;
+   delete []IWORK;
+   delete []WORK;
+   delete []A;
+   printf("Largest %d eigenvalues:", dimPC);
+   for(int i = 0; i < dimPC; i++)
+      printf(" %.2lf", S[i]);
+   printf("\n");
+   double totalVariance = 0;
+   double variance20 = 0;
+   for(int i = 0; i < dimPC; i++)
+      variance20 += S[i];
+   for(int i = 0; (S[i] > 1E-10) && (i < dimN-1); i++)
+      totalVariance += S[i];
+   printf("The first %d PCs are able to explain %.2lf / %.2lf = %.1lf%% of total variance.\n",
+      dimPC, variance20, totalVariance, variance20/totalVariance*100);
+   printf("The proportion of total variance explained (%%) by each PC is:\n  ");
+   for(int i = 0; i < dimPC; i++)
+      printf(" %.1lf", S[i]/totalVariance*100);
+   printf("\n");
+   for(int i = 0; i < dimN; i++)
+      for(int j = 0; j < dimPC; j++){
+         EV[i][j] = VT[i*dimN+j];
+         rightMatrix[i][j] = VT[i*dimN+j] / S[j];
+      }
+   delete []S;
+#else
+   printf("  Please re-compile KING with LAPACK library.\n");
+   SVD svd;
+   svd.Decompose(D);
+   printf("done\n");
+   if(svd.n == 0) return;
+   QuickIndex idx;
+   idx.Index(svd.w);
+   printf("Largest %d eigenvalues:", dimPC);
+   for(int i = 0; i < dimPC; i++)
+      printf(" %.2lf", svd.w[idx[dimN-1-i]]);
+   printf("\n");
+   for(int i = 0; i < dimN; i++)
+      for(int j = 0; j < dimPC; j++){
+         EV[i][j] = svd.v[i][idx[dimN-1-j]];
+         rightMatrix[i][j] = svd.v[i][idx[dimN-1-j]] / svd.w[idx[dimN-1-j]];
+      }
+#endif
+   tempV.Dimension(dimPC);
+   for(int j = 0; j < dimPC; j++){
+      double sum = 0;
+      for(int i = 0; i < dimN; i++)
+         sum += rightMatrix[i][j];
+      tempV[j] = sum / dimN;
+   }
+   for(int i = 0; i < dimN; i++)
+      for(int j = 0; j < dimPC; j++)
+         rightMatrix[i][j] -= tempV[j];
+   Matrix subtractMatrix(dimN, dimPC);
+   for(int i = 0; i < dimN; i++)
+      for(int k = 0; k < dimPC; k++){
+         double sum = 0;
+         for(int j = 0; j < dimN; j++)
+            sum += counts[i][j] * rightMatrix[j][k];
+         subtractMatrix[i][k] = sum;
+      }
+   delete []counts;
+   Vector subtractV(dimPC);
+   for(int j = 0; j < dimPC; j++){
+      double sum = 0.0;
+      for(int i = 0; i < dimN; i++)
+         sum += subtractMatrix[i][j];
+      subtractV[j] = sum / dimN;
+   }
+   unsigned long long int word0, word, word1, word2;
+#ifdef _OPENMP
+   printf("%d CPU cores are used to compute the projected PCs...\n", defaultMaxCoreCount);fflush(stdout);
+   #pragma omp parallel for num_threads(defaultMaxCoreCount) \
+      private(word, word0, word1, word2)
+#endif
+   for(int i = dimN; i < validCount; i++){
+      int id1 = ID_AFF[i-dimN];
+      Vector IPs(dimN);
+      for(int j = 0; j < dimN; j++){
+         int id2 = ID_UN[j];
+         word1 = word2 = 0;
+         for(int m = 0; m < longCount; m++){
+            word0 = LG[0][id1][m] & LG[0][id2][m];          // HomHom
+            word = word0 - ((word0>>1)&0x5555555555555555);
+            word = (word&0x3333333333333333) + ((word>>2)&0x3333333333333333);
+            word = (word+(word>>4)) & 0x0F0F0F0F0F0F0F0F;
+            word = (word+(word>>8)) & 0x00FF00FF00FF00FF;
+            word1 += (word+(word>>16)) & 0x0000FFFF0000FFFF;  // HomHom
+            word0 &= (LG[1][id1][m] ^ LG[1][id2][m]);       // IBS0
+            word = word0 - ((word0>>1)&0x5555555555555555);  // IBS0
+            word = (word&0x3333333333333333) + ((word>>2)&0x3333333333333333);
+            word = (word+(word>>4)) & 0x0F0F0F0F0F0F0F0F;
+            word = (word+(word>>8)) & 0x00FF00FF00FF00FF;
+            word2 += (word+(word>>16)) & 0x0000FFFF0000FFFF;  // IBS0
+         }
+         IPs[j] = ((word1+(word1>>32)) & 0xFFFFFFFF) - (((word2+(word2>>32)) & 0xFFFFFFFF)<<1);
+      }
+      for(int k = 0; k < dimPC; k++){
+         double ev = 0;
+         for(int j = 0; j < dimN; j++)
+            ev += IPs[j] * rightMatrix[j][k];
+         ev -= subtractV[k];
+         EV[i][k] = ev;
+      }
+   }
+   String pedfile = prefix;
+   pedfile.Add("pc.txt");
+   FILE *fp = fopen(pedfile, "wt");
+   if(fp == NULL) error("Cannot open %s to write.", (const char*)pedfile);
+   fprintf(fp, "FID IID FA MO SEX AFF");
+   for(int j = 0; j < dimPC; j++)
+      fprintf(fp, " PC%d", j+1);
+   fprintf(fp, "\n");
+   for(int i = 0; i < validCount; i++){
+      int id = phenoid[i < dimN? ID_UN[i]: ID_AFF[i-dimN]];
+      fprintf(fp, "%s %s %s %s %d %s",
+         (const char*)ped[id].famid, (const char*)ped[id].pid,
+         (const char*)ped[id].fatid, (const char*)ped[id].motid,
+         ped[id].sex, i < dimN? "1": "2");
+      for(int j = 0; j < dimPC; j++)
+         fprintf(fp, " %.4lf", EV[i][j]);
+      fprintf(fp, "\n");
+   }
+   fclose(fp);
+   printf("PCA ends at %s", currentTime());
+   printf("%d principal components saved in file %s\n", dimPC, (const char*)pedfile);
+}
+
 void Engine::mds()
 {
+   printf("\nOptions in effect:\n");
+   printf("\t--mds\n");
+   if(Bit64Flag)
+      printf("\t--sysbit 64\n");
+   if(CoreCount)
+      printf("\t--cpus %d\n", CoreCount);
+   if(prefix!="king")
+      printf("\t--prefix %s\n", (const char*)prefix);
+   printf("\n");
    if(xflag){
       if(xsnpName.Length() < MINSNPCOUNT) {
          if(xsnpName.Length()==0)
@@ -116,7 +335,7 @@ void Engine::mds()
    printf("SVD starts at %s", currentTime());
 
 #ifdef WITH_LAPACK
-   printf("  LAPACK is used.\n");
+   printf("  LAPACK is being used...\n"); fflush(stdout);
    char JOBZ = 'A';
    int info;
    double *A = new double[dimN*dimN];
@@ -155,7 +374,7 @@ void Engine::mds()
    for(int i = 0; i < dimPC; i++)
       printf(" %.1lf", S[i]/totalVariance*100);
    printf("\n");
-   delete S;
+   delete []S;
 #else
    printf("  Please re-compile KING with LAPACK library.\n");
    SVD svd;
@@ -172,23 +391,14 @@ void Engine::mds()
    printf("\n");
 #endif
 
-   String datfile = prefix;
-   datfile.Add("pc.dat");
-   FILE *fp = fopen(datfile, "wt");
-   if(fp == NULL) error("Cannot open %s to write.", (const char*)datfile);
-   fprintf(fp, "S related\n");
-   for(int i = 0; i < dimPC; i++)
-      fprintf(fp, "C PC%d\n", i+1);
-   if(detailFlag){
-      fprintf(fp, "C Heterozygosity\n");
-      fprintf(fp, "C Quality\n");
-   }
-   fclose(fp);
-
    String pedfile = prefix;
-   pedfile.Add("pc.ped");
-   fp = fopen(pedfile, "wt");
+   pedfile.Add("pc.txt");
+   FILE *fp = fopen(pedfile, "wt");
    if(fp == NULL) error("Cannot open %s to write.", (const char*)pedfile);
+   fprintf(fp, "FID IID FA MO SEX AFF");
+   for(int j = 0; j < dimPC; j++)
+      fprintf(fp, " PC%d", j+1);
+   fprintf(fp, "\n");
    for(int i = 0; i < ID.Length(); i++){
       int id = ID[i];
       fprintf(fp, "%s %s %s %s %d",
@@ -206,112 +416,13 @@ void Engine::mds()
    }
    fclose(fp);
    printf("MDS ends at %s", currentTime());
-   printf("%d principal components saved in files %s and %s\n",
-      dimPC, (const char*)datfile, (const char*)pedfile);
+   printf("%d principal components saved in file %s\n",
+      dimPC, (const char*)pedfile);
 #ifdef WITH_LAPACK
    delete []VT;
 #endif
 }
 
-
-/*
-   if(allflags & (1<<IBSFLAG))
-      printf("IBS Distance is used in the MDS analysis.\n");
-   else
-      printf("Euclidean Distance is used in the MDS analysis.\n");
-*/
-
-
-/*   if(detailFlag) countGenotype();
-   if(geno.Length()==0) {
-      individualInfo = true;
-      if(shortFlag) BuildShortBinary();
-      else BuildBinary();
-   }
-*/
-
-   /*
-   if(xflag)
-   for(int n = 0; n < ped.count; n++){
-      id1 = geno[n];
-      count = 0;
-      for(int m = 0; m < xshortCount; m++)
-         count += oneoneCount[XG[0][id1][m] | XG[1][id1][m]];
-      if(count >= MINSNPCOUNT)
-         ID.Push(n);
-   }
-   else
-   for(int n = 0; n < ped.count; n++)
-      if(ped[n].ngeno >= MINSNPCOUNT)
-         ID.Push(n);
-     */
-
-   /*
-   int IBS0Count, IBS2Count, het1Count, notMissingCount;
-   Matrix D(dimN, dimN);
-   D.Zero();
-
-  IntArray ompindex(dimN-1);
-#ifdef _OPENMP
-   for(int i = 0; i < (dimN-1)/2; i++){
-      ompindex[2*i] = i;
-      ompindex[2*i+1] = dimN-2-i;
-   }
-   if(dimN%2==0)
-      ompindex[dimN-2] = (dimN-1)/2;
-#else
-   for(int i = 0; i < dimN-1; i++)
-      ompindex[i] = i;
-#endif
-#ifdef _OPENMP
-   printf("%d CPU cores are used to compute the distant matrix.\n", defaultMaxCoreCount);
-   #pragma omp parallel for num_threads(defaultMaxCoreCount) \
-         private(IBS0Count, IBS2Count, het1Count, notMissingCount, id1, id2)
-#endif
-   for(int tempi = 0; tempi < dimN-1; tempi++){
-      int i = ompindex[tempi];
-      id1 = geno[ID[i]];
-      for(int j = i+1; j < dimN; j++){
-         id2 = geno[ID[j]];
-         if(id1 < 0 || id2 < 0) continue;
-         if(ibsFlag){ // IBS Distance
-            IBS0Count = IBS2Count = notMissingCount = 0;
-            if(xflag)
-               for(int m = 0; m < xshortCount; m++){
-                  IBS0Count += oneoneCount[XG[0][id1][m] & XG[0][id2][m] & (XG[1][id1][m] ^ XG[1][id2][m])];
-                  IBS2Count += oneoneCount[~(XG[0][id1][m]^XG[0][id2][m]) & ~(XG[1][id1][m]^XG[1][id2][m]) & (XG[0][id1][m] | XG[1][id1][m])];
-                  notMissingCount += oneoneCount[(XG[0][id1][m] | XG[1][id1][m]) & (XG[0][id2][m] | XG[1][id2][m])];
-               }
-            else
-               for(int m = 0; m < shortCount; m++){
-                  IBS0Count += oneoneCount[GG[0][id1][m] & GG[0][id2][m] & (GG[1][id1][m] ^ GG[1][id2][m])];
-                  IBS2Count += oneoneCount[~(GG[0][id1][m]^GG[0][id2][m]) & ~(GG[1][id1][m]^GG[1][id2][m]) & (GG[0][id1][m] | GG[1][id1][m])];
-                  notMissingCount += oneoneCount[(GG[0][id1][m] | GG[1][id1][m]) & (GG[0][id2][m] | GG[1][id2][m])];
-               }
-            if(notMissingCount)
-               D[i][j] = D[j][i] = 1-(IBS2Count-IBS0Count)*1.0/notMissingCount;
-         }else{ // Euclidean Distance
-            IBS0Count = het1Count = notMissingCount = 0;
-            if(xflag)
-               for(int m = 0; m < xshortCount; m++){
-                  IBS0Count += oneoneCount[XG[0][id1][m] & XG[0][id2][m] & (XG[1][id1][m] ^ XG[1][id2][m])];
-                  notMissingCount += oneoneCount[(XG[0][id1][m] | XG[1][id1][m]) & (XG[0][id2][m] | XG[1][id2][m])];
-                  het1Count += oneoneCount[(XG[0][id2][m] & (~XG[0][id1][m]) & XG[1][id1][m]) |
-                        (XG[0][id1][m] & (~XG[0][id2][m]) & XG[1][id2][m])];
-               }
-            else
-               for(int m = 0; m < shortCount; m++){
-                  IBS0Count += oneoneCount[GG[0][id1][m] & GG[0][id2][m] & (GG[1][id1][m] ^ GG[1][id2][m])];
-                  notMissingCount += oneoneCount[(GG[0][id1][m] | GG[1][id1][m]) & (GG[0][id2][m] | GG[1][id2][m])];
-                  het1Count += oneoneCount[(GG[0][id2][m] & (~GG[0][id1][m]) & GG[1][id1][m]) |
-                     (GG[0][id1][m] & (~GG[0][id2][m]) & GG[1][id2][m]) ];
-               }
-            if(notMissingCount)
-               D[i][j] = D[j][i] = (het1Count + 4.0*IBS0Count) / notMissingCount;
-         }
-      }
-   }
-   */
 
 void Engine::SemifamilyKinship()
 {
@@ -637,30 +748,17 @@ void Engine::mds_family()
 #endif
          }
       }
-
-   String datfile = prefix;
-   if(xflag)
-      datfile.Add("Xpc.dat");
-   else
-      datfile.Add("pc.dat");
-   FILE *fp = fopen(datfile, "wt");
-   if(fp == NULL) error("Cannot open %s to write.", (const char*)datfile);
-   fprintf(fp, "S related\n");
-   for(int i = 0; i < dimPC; i++)
-      fprintf(fp, "C PC%d\n", i+1);
-   if(detailFlag){
-      fprintf(fp, "C Heterozygosity\n");
-      fprintf(fp, "C Quality\n");
-   }
-   fclose(fp);
-
    String pedfile = prefix;
    if(xflag)
-      pedfile.Add("Xpc.ped");
+      pedfile.Add("Xpc.txt");
    else
-      pedfile.Add("pc.ped");
-   fp = fopen(pedfile, "wt");
+      pedfile.Add("pc.txt");
+   FILE *fp = fopen(pedfile, "wt");
    if(fp == NULL) error("Cannot open %s to write.", (const char*)pedfile);
+   fprintf(fp, "FID IID FA MO SEX AFF");
+   for(int j = 0; j < dimPC; j++)
+      fprintf(fp, " PC%d", j+1);
+   fprintf(fp, "\n");
    for(int f = 0; f < ped.familyCount; f++)
       for(int i = 0; i < id[f].Length(); i++){
          if(ped[id[f][i]].ngeno==0) continue;
@@ -681,8 +779,8 @@ void Engine::mds_family()
    }
    fclose(fp);
    printf("MDS for family data ends at %s", currentTime());
-   printf("%d principal components saved in files %s and %s\n",
-      dimPC, (const char*)datfile, (const char*)pedfile);
+   printf("%d principal components saved in file %s\n",
+      dimPC, (const char*)pedfile);
 #ifdef WITH_LAPACK
    delete []VT;
 #endif
@@ -744,8 +842,9 @@ void Engine::mds_family_projection()
 
    SemifamilyKinship();
    for(int f = 0; f < ped.familyCount; f++){
+      int idfCount = id[f].Length();
       first[f] = ID_UN.Length();
-      if(id[f].Length() < 2) {
+      if(idfCount < 2) {
          if(id[f].Length() == 1){
             ID_UN.Push(id[f][0]);
             ID.Stack(id[f]);
@@ -753,35 +852,60 @@ void Engine::mds_family_projection()
          }
          continue;
       }
-      unrelatedCount.Dimension(id[f].Length());
+      unrelatedCount.Dimension(idfCount);
       unrelatedCount.Zero();
-      for(int i = 0; i < id[f].Length(); i++){
-         if(ped[id[f][i]].ngeno == 0) { // untyped person not included in analysis
-            unrelatedCount[i] = -1;
-            continue;
+      if(semifamilyFlag)
+         for(int i = 0; i < idfCount; i++){
+            if(ped[id[f][i]].ngeno == 0)  // untyped person not included in analysis
+               unrelatedCount[i] = -1;
+            else
+               for(int j = i+1; j < idfCount; j++)
+                  if(pedKin[f][i][j] < 0.022){
+                     unrelatedCount[i] ++;
+                     unrelatedCount[j] ++;
+                  }
          }
-         for(int j = i+1; j < id[f].Length(); j++)
-            if( (semifamilyFlag && pedKin[f][i][j] < 0.022) || (pedKin[f][i][j] < 0.001) ){
-               unrelatedCount[i] ++;
-               unrelatedCount[j] ++;
-            }
-      }
+      else
+         for(int i = 0; i < idfCount; i++){
+            if(ped[id[f][i]].ngeno == 0) // untyped person not included in analysis
+               unrelatedCount[i] = -1;
+            else
+               for(int j = i+1; j < idfCount; j++)
+                  if(pedKin[f][i][j] < 0.001){
+                     unrelatedCount[i] ++;
+                     unrelatedCount[j] ++;
+                  }
+         }
       idx.Index(unrelatedCount);
       ID_unrelated.Dimension(0);
-      ID_unrelated.Push(idx[unrelatedCount.Length()-1]);
+      ID_unrelated.Push(idx[idfCount-1]);
       first[f] = ID_UN.Length();
-      for(int i = unrelatedCount.Length()-2; (i >= 0) && (unrelatedCount[idx[i]] > 0); i--){
-         bool isUnrelated = true;
-         for(int j = 0; j < ID_unrelated.Length(); j++)
-            if( (semifamilyFlag && pedKin[f][idx[i]][ID_unrelated[j]] >= 0.022)
-               || (!semifamilyFlag && pedKin[f][idx[i]][ID_unrelated[j]] >= 0.001) ) {
-               isUnrelated = false;
-               break;
-            }
-         if(isUnrelated) ID_unrelated.Push(idx[i]);
-      }
-      last[f] = ID_unrelated.Length()-1+ID_UN.Length();
-      for(int i = 0; i < ID_unrelated.Length(); i++)
+      if(semifamilyFlag)
+         for(int i = idfCount-2; (i >= 0) && (unrelatedCount[idx[i]] > 0); i--){
+            bool isUnrelated = true;
+            int iSorted = idx[i];
+            int tempCount = ID_unrelated.Length();
+            for(int j = 0; j < tempCount; j++)
+               if(pedKin[f][iSorted][ID_unrelated[j]] >= 0.022){
+                  isUnrelated = false;
+                  break;
+               }
+            if(isUnrelated) ID_unrelated.Push(idx[i]);
+         }
+      else
+         for(int i = idfCount-2; (i >= 0) && (unrelatedCount[idx[i]] > 0); i--){
+            bool isUnrelated = true;
+            int tempCount = ID_unrelated.Length();
+            for(int j = 0; j < tempCount; j++)
+               if(pedKin[f][idx[i]][ID_unrelated[j]] >= 0.001){
+                  isUnrelated = false;
+                  break;
+               }
+            if(isUnrelated) ID_unrelated.Push(idx[i]);
+         }
+      int tempCount = ID_unrelated.Length();
+      last[f] = tempCount-1+ID_UN.Length();
+      for(int i = 0; i < tempCount; i++)
          ID_UN.Push(id[f][ID_unrelated[i]]);
       ID.Stack(id[f]);
    }
@@ -1027,30 +1151,17 @@ void Engine::mds_family_projection()
          }
       }
    }
-
-   String datfile = prefix;
-   if(xflag)
-      datfile.Add("Xpc.dat");
-   else
-      datfile.Add("pc.dat");
-   FILE *fp = fopen(datfile, "wt");
-   if(fp == NULL) error("Cannot open %s to write.", (const char*)datfile);
-   fprintf(fp, "S related\n");
-   for(int i = 0; i < dimPC; i++)
-      fprintf(fp, "C PC%d\n", i+1);
-   if(detailFlag){
-      fprintf(fp, "C Heterozygosity\n");
-      fprintf(fp, "C Quality\n");
-   }
-   fclose(fp);
-
    String pedfile = prefix;
    if(xflag)
-      pedfile.Add("Xpc.ped");
+      pedfile.Add("Xpc.txt");
    else
-      pedfile.Add("pc.ped");
-   fp = fopen(pedfile, "wt");
+      pedfile.Add("pc.txt");
+   FILE *fp = fopen(pedfile, "wt");
    if(fp == NULL) error("Cannot open %s to write.", (const char*)pedfile);
+   fprintf(fp, "FID IID FA MO SEX AFF");
+   for(int j = 0; j < dimPC; j++)
+      fprintf(fp, " PC%d", j+1);
+   fprintf(fp, "\n");
    IntArray inSVD(ped.count);
    inSVD.Set(-1);
    for(int i = 0; i < ID_UN.Length(); i++)
@@ -1081,8 +1192,7 @@ void Engine::mds_family_projection()
    }
    fclose(fp);
    printf("MDS for family data ends at %s", currentTime());
-   printf("%d principal components saved in files %s and %s\n",
-      dimPC, (const char*)datfile, (const char*)pedfile);
+   printf("%d principal components saved in file %s\n", dimPC, (const char*)pedfile);
 #ifdef WITH_LAPACK
    delete []VT;
 #endif
@@ -1266,20 +1376,14 @@ void Engine::pca_projection(int every)
             EV[i][j] /= svd.w[idx[dimN-1-j]];
       }
 #endif
-
-   String datfile = prefix;
-   datfile.Add("pc.dat");
-   FILE *fp = fopen(datfile, "wt");
-   if(fp == NULL) error("Cannot open %s to write.", (const char*)datfile);
-   fprintf(fp, "S related\n");
-   for(int i = 0; i < dimPC; i++)
-      fprintf(fp, "C PC%d\n", i+1);
-   fclose(fp);
-
    String pedfile = prefix;
-   pedfile.Add("pc.ped");
-   fp = fopen(pedfile, "wt");
+   pedfile.Add("pc.txt");
+   FILE *fp = fopen(pedfile, "wt");
    if(fp == NULL) error("Cannot open %s to write.", (const char*)pedfile);
+   fprintf(fp, "FID IID FA MO SEX AFF");
+   for(int j = 0; j < dimPC; j++)
+      fprintf(fp, " PC%d", j+1);
+   fprintf(fp, "\n");
    IntArray typed(ped.count);
    typed.Set(-1);
    for(int i = 0; i < ID.Length(); i++)
@@ -1308,8 +1412,7 @@ void Engine::pca_projection(int every)
    }
    fclose(fp);
    printf("PCA ends at %s", currentTime());
-   printf("%d principal components saved in files %s and %s\n",
-      dimPC, (const char*)datfile, (const char*)pedfile);
+   printf("%d principal components saved in file %s\n", dimPC, (const char*)pedfile);
 }
 
 void Engine::pca_family(int every)
@@ -1354,6 +1457,7 @@ void Engine::pca_family(int every)
    }
 //   int dimM = (markerCount-1) / every +1;
    int dimM = markerCount;
+   if(dimM == 0) error("No autosome markers");
 #ifndef WITH_LAPACK
    if(dimM > 100000)
       printf("Note: it may take too long to perform PCA on %d markers.\n", dimM);
@@ -1504,20 +1608,14 @@ void Engine::pca_family(int every)
             EV[i][j] /= svd.w[idx[dimN-1-j]];
       }
 #endif
-
-   String datfile = prefix;
-   datfile.Add("pc.dat");
-   FILE *fp = fopen(datfile, "wt");
-   if(fp == NULL) error("Cannot open %s to write.", (const char*)datfile);
-   fprintf(fp, "S related\n");
-   for(int i = 0; i < dimPC; i++)
-      fprintf(fp, "C PC%d\n", i+1);
-   fclose(fp);
-
    String pedfile = prefix;
-   pedfile.Add("pc.ped");
-   fp = fopen(pedfile, "wt");
+   pedfile.Add("pc.txt");
+   FILE *fp = fopen(pedfile, "wt");
    if(fp == NULL) error("Cannot open %s to write.", (const char*)pedfile);
+   fprintf(fp, "FID IID FA MO SEX AFF");
+   for(int j = 0; j < dimPC; j++)
+      fprintf(fp, " PC%d", j+1);
+   fprintf(fp, "\n");
    IntArray typed(ped.count);
    typed.Set(-1);
    for(int i = 0; i < ID.Length(); i++)
@@ -1546,8 +1644,7 @@ void Engine::pca_family(int every)
    }
    fclose(fp);
    printf("PCA ends at %s", currentTime());
-   printf("%d principal components saved in files %s and %s\n",
-      dimPC, (const char*)datfile, (const char*)pedfile);
+   printf("%d principal components saved in file %s\n", dimPC, (const char*)pedfile);
 }
 
 void Engine::pca_family_check(int every)
@@ -1777,19 +1874,14 @@ void Engine::pca_family_check(int every)
             EV[i][j] /= svd.w[idx[dimN-1-j]];
       }
 #endif
-   String datfile = prefix;
-   datfile.Add("pc.dat");
-   FILE *fp = fopen(datfile, "wt");
-   if(fp == NULL) error("Cannot open %s to write.", (const char*)datfile);
-   fprintf(fp, "S related\n");
-   for(int i = 0; i < dimPC; i++)
-      fprintf(fp, "C PC%d\n", i+1);
-   fclose(fp);
-
    String pedfile = prefix;
-   pedfile.Add("pc.ped");
-   fp = fopen(pedfile, "wt");
+   pedfile.Add("pc.txt");
+   FILE *fp = fopen(pedfile, "wt");
    if(fp == NULL) error("Cannot open %s to write.", (const char*)pedfile);
+   fprintf(fp, "FID IID FA MO SEX AFF");
+   for(int j = 0; j < dimPC; j++)
+      fprintf(fp, " PC%d", j+1);
+   fprintf(fp, "\n");
    IntArray typed(ped.count);
    typed.Set(-1);
    for(int i = 0; i < ID.Length(); i++)
@@ -1817,8 +1909,7 @@ void Engine::pca_family_check(int every)
    }
    fclose(fp);
    printf("PCA ends at %s", currentTime());
-   printf("%d principal components saved in files %s and %s\n",
-      dimPC, (const char*)datfile, (const char*)pedfile);
+   printf("%d principal components saved in file %s\n", dimPC, (const char*)pedfile);
 }
 
 void Engine::mds_kin_family()
@@ -2049,23 +2140,14 @@ void Engine::mds_kin_family()
       ID.Stack(ID_unrelated);
       ID.Stack(ID_related);
    }
-   String datfile = prefix;
-   datfile.Add("pc.dat");
-   FILE *fp = fopen(datfile, "wt");
-   if(fp == NULL) error("Cannot open %s to write.", (const char*)datfile);
-   fprintf(fp, "S related\n");
-   for(int i = 0; i < dimPC; i++)
-      fprintf(fp, "C PC%d\n", i+1);
-   if(detailFlag){
-      fprintf(fp, "C Heterozygosity\n");
-      fprintf(fp, "C Quality\n");
-   }
-   fclose(fp);
-
    String pedfile = prefix;
-   pedfile.Add("pc.ped");
-   fp = fopen(pedfile, "wt");
+   pedfile.Add("pc.txt");
+   FILE *fp = fopen(pedfile, "wt");
    if(fp == NULL) error("Cannot open %s to write.", (const char*)pedfile);
+   fprintf(fp, "FID IID FA MO SEX AFF");
+   for(int j = 0; j < dimPC; j++)
+      fprintf(fp, " PC%d", j+1);
+   fprintf(fp, "\n");
    IntArray typed(ped.count);
    typed.Set(-1);
    for(int i = 0; i < ID.Length(); i++)
@@ -2100,8 +2182,7 @@ void Engine::mds_kin_family()
    }
    fclose(fp);
    printf("MDS with kinship incorporated ends at %s", currentTime());
-   printf("%d principal components saved in files %s and %s\n",
-      dimPC, (const char*)datfile, (const char*)pedfile);
+   printf("%d principal components saved in file %s\n", dimPC, (const char*)pedfile);
 #ifdef WITH_LAPACK
    delete []VT;
 #endif
@@ -2116,7 +2197,7 @@ void Engine::mds_moving()
    int segCount = 22;
 
    // setup segments
-   if(chromosomes.Length() < markerCount || positions.Length() < markerCount){
+   if(chromosomes.Length() < markerCount || bp.Length() < markerCount){
       printf("Chromosome and position information is incomplete. Moving-window MDS analysis is aborted.\n");
       return;
    }
@@ -2295,9 +2376,13 @@ void Engine::mds_moving()
    for(int p = 0; p < dimPC; p++){
       String pedfile = prefix;
       pedfile += p+1;
-      pedfile.Add("pc.ped");
+      pedfile.Add("pc.txt");
       FILE *fp = fopen(pedfile, "wt");
       if(fp == NULL) error("Cannot open %s to write.", (const char*)pedfile);
+      fprintf(fp, "FID IID FA MO SEX AFF");
+      for(int j = 0; j < dimPC; j++)
+         fprintf(fp, " PC%d", j+1);
+      fprintf(fp, "\n");
       for(int i = 0; i < ped.count; i++){
          int k = typed[i];
          if(k == -1) // continue;
@@ -2478,23 +2563,14 @@ void Engine::mds_kin()
    printf("\n");
 #endif
 
-   String datfile = prefix;
-   datfile.Add("pc.dat");
-   FILE *fp = fopen(datfile, "wt");
-   if(fp == NULL) error("Cannot open %s to write.", (const char*)datfile);
-   fprintf(fp, "S related\n");
-   for(int i = 0; i < dimPC; i++)
-      fprintf(fp, "C PC%d\n", i+1);
-   if(detailFlag){
-      fprintf(fp, "C Heterozygosity\n");
-      fprintf(fp, "C Quality\n");
-   }
-   fclose(fp);
-
    String pedfile = prefix;
-   pedfile.Add("pc.ped");
-   fp = fopen(pedfile, "wt");
+   pedfile.Add("pc.txt");
+   FILE *fp = fopen(pedfile, "wt");
    if(fp == NULL) error("Cannot open %s to write.", (const char*)pedfile);
+   fprintf(fp, "FID IID FA MO SEX AFF");
+   for(int j = 0; j < dimPC; j++)
+      fprintf(fp, " PC%d", j+1);
+   fprintf(fp, "\n");
    IntArray typed(ped.count);
    typed.Set(-1);
    for(int i = 0; i < ID.Length(); i++)
@@ -2528,8 +2604,7 @@ void Engine::mds_kin()
    }
    fclose(fp);
    printf("PCA with kinship incorporated ends at %s", currentTime());
-   printf("%d principal components saved in files %s and %s\n",
-      dimPC, (const char*)datfile, (const char*)pedfile);
+   printf("%d principal components saved in file %s\n", dimPC, (const char*)pedfile);
 #ifdef WITH_LAPACK
    delete []VT;
 #endif
@@ -2685,19 +2760,14 @@ void Engine::pca(int every)
       printf(" %.2lf", svd.w[idx[dimN-1-i]]);
    printf("\n");
 #endif
-   String datfile = prefix;
-   datfile.Add("pc.dat");
-   FILE *fp = fopen(datfile, "wt");
-   if(fp == NULL) error("Cannot open %s to write.", (const char*)datfile);
-   fprintf(fp, "S related\n");
-   for(int i = 0; i < dimPC; i++)
-      fprintf(fp, "C PC%d\n", i+1);
-   fclose(fp);
-
    String pedfile = prefix;
-   pedfile.Add("pc.ped");
-   fp = fopen(pedfile, "wt");
+   pedfile.Add("pc.txt");
+   FILE *fp = fopen(pedfile, "wt");
    if(fp == NULL) error("Cannot open %s to write.", (const char*)pedfile);
+   fprintf(fp, "FID IID FA MO SEX AFF");
+   for(int j = 0; j < dimPC; j++)
+      fprintf(fp, " PC%d", j+1);
+   fprintf(fp, "\n");
    IntArray typed(ped.count);
    typed.Set(-1);
    for(int i = 0; i < ID.Length(); i++)
@@ -2724,8 +2794,7 @@ void Engine::pca(int every)
    }
    fclose(fp);
    printf("PCA ends at %s", currentTime());
-   printf("%d principal components saved in files %s and %s\n",
-      dimPC, (const char*)datfile, (const char*)pedfile);
+   printf("%d principal components saved in file %s\n", dimPC, (const char*)pedfile);
 #ifdef WITH_LAPACK
    free(VT);
 #endif
@@ -2735,739 +2804,4 @@ void Engine::pca(int every)
 
 
 
-
-/*
-void Engine::pca_family_noadmix(int every)
-{
-   Kinship kin;
-   IntArray FID(0), ID_UN(0), ID_unrelated;
-   for(int f = 0; f < ped.familyCount; f++){
-      ID_unrelated.Dimension(0);
-      for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++)
-         if(ped[i].ngeno >= MINSNPCOUNT){
-            if(ped[i].isFounder())
-               ID_unrelated.Push(i);
-         }
-      kin.Setup(*ped.families[f]);
-      for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++){
-         if(ped[i].ngeno < MINSNPCOUNT) continue;
-         bool isUnrelated = true;
-         for(int j = 0; j < ID_unrelated.Length(); j++)
-            if(kin(ped[i], ped[ID_unrelated[j]]) > 0) {
-               isUnrelated = false;
-               break;
-            }
-         if(isUnrelated) ID_unrelated.Push(i);
-      }
-      for(int i = 0; i < ID_unrelated.Length(); i++)
-         ID_UN.Push(ID_unrelated[i]);
-      if(ID_unrelated.Length()) FID.Push(f);
-   }
-   int dimN = FID.Length();
-   IntArray *pid=NULL;
-   pid = new IntArray[dimN];
-   for(int f = 0; f < dimN; f++){
-      pid[f].Dimension(0);
-      kin.Setup(*ped.families[f]);
-      for(int i = ped.families[FID[f]]->first; i <= ped.families[FID[f]]->last; i++){
-         if(ped[i].ngeno < MINSNPCOUNT) continue;
-         bool skip = false;
-         for(int j = ped.families[FID[f]]->first; j < i; j++)
-            if(kin(ped[i], ped[j]) > 0.4){
-               skip = true;
-               break;
-            }
-         if(skip) continue;
-         pid[f].Push(i);
-      }
-   }
-
-   double p;
-   if(!freqLoaded)
-      for(int m = 0; m < ped.markerCount; m++){
-         int alleleCount = ped.GetMarkerInfo(m)->alleleLabels.Length();
-         ped.GetMarkerInfo(m)->freq.Dimension(alleleCount);
-         if(alleleCount != 3) continue;
-         double freq = 0;
-         int freqCount = 0;
-         for(int i = 0; i < dimN; i++)
-            if(ped[ID_UN[i]].markers[m].isKnown()){
-               freq += ped[ID_UN[i]].markers[m].countAlleles(2);
-               freqCount += 2;
-            }
-         if(freqCount) freq /= freqCount;
-         ped.GetMarkerInfo(m)->freq[2] = freq;
-         ped.GetMarkerInfo(m)->freq[1] = 1-freq;
-      }
-
-   Cholesky chol;
-
-   int dimM = 0;
-   for(int m = 0; m < ped.markerCount; m += every){
-      int alleleCount = ped.GetMarkerInfo(m)->freq.Length();
-      if(alleleCount != 3) continue;
-      p = ped.GetMarkerInfo(m)->freq[2];
-      if(p < 0.001 || p > 0.999) continue;
-      dimM ++;
-   }
-   printf("Dimension of PCA: %d %d\n", dimM, dimN);
-   Matrix X(dimM, dimN);
-   X.Zero();
-   int minorAllele;
-   int row=0;
-   Matrix *phi = NULL;
-   phi = new Matrix[dimN];
-   Vector OnePhiOne(dimN);
-   OnePhiOne.Zero();
-   for(int f = 0; f < dimN; f++){
-      kin.Setup(*ped.families[FID[f]]);
-      phi[f].Dimension(pid[f].Length(),pid[f].Length());
-      if(pid[f].Length()==1){
-         phi[f][0][0] = 1;
-         OnePhiOne[f] = 1;
-      }else{
-         phi[f].Zero();
-         for(int i = 0; i < pid[f].Length(); i++)
-            for(int j = i; j < pid[f].Length(); j++)
-               phi[f][i][j] = phi[f][j][i] = 2*kin(ped[pid[f][i]], ped[pid[f][j]]);
-
-         chol.Decompose(phi[f]);
-         chol.Invert();
-         for(int i = 0; i < pid[f].Length(); i++)
-            for(int j = 0; j < pid[f].Length(); j++){
-               phi[f][i][j] = chol.inv[i][j];
-               OnePhiOne[f] += chol.inv[i][j];
-            }
-      }
-   }
-   Vector G;
-   for(int m = 0; m < ped.markerCount; m += every){
-      int alleleCount = ped.GetMarkerInfo(m)->freq.Length();
-      if(alleleCount != 3) continue;
-      minorAllele = ped.GetMarkerInfo(m)->freq[2]>0.5 ? 1: 2;
-      p = ped.GetMarkerInfo(m)->freq[minorAllele];
-      if(p < 0.001) continue;
-      for(int f = 0; f < dimN; f++){
-         G.Dimension(pid[f].Length());
-         for(int i = 0; i < pid[f].Length(); i++)
-            if(ped[pid[f][i]].isGenotyped(m))
-               G[i] = ped[pid[f][i]].markers[m].countAlleles(minorAllele);
-            else
-               G[i] = p*2;
-         for(int i = 0; i < pid[f].Length(); i++)
-            for(int j = 0; j < pid[f].Length(); j++)
-               X[row][f] += phi[f][i][j] * G[j];
-         X[row][f] = (X[row][f] - OnePhiOne[f]*2*p) / sqrt(2*p*(1-p)*OnePhiOne[f]);
-      }
-      row++;
-   }
-   printf("SVD...");
-   SVD svd;
-   svd.Decompose(X);
-   printf("done\n");
-
-   if(pid) delete []pid;
-   if(phi) delete []phi;
-   if(svd.n == 0) return;
-   QuickIndex idx;
-   idx.Index(svd.w);
-
-   int dimPC = dimN>20?20:dimN;
-   printf("Largest %d eigenvalues:", dimPC);
-   for(int i = 0; i < dimPC; i++)
-      printf(" %.2lf", svd.w[idx[dimN-1-i]]);
-   printf("\n");
-
-   String filename = prefix;
-   filename.Add(".pc");
-   FILE *fp = fopen(filename, "wt");
-   if(fp == NULL) error("Cannot open %s to write.", (const char*)filename);
-   for(int n = 0; n < dimN; n++){
-      fprintf(fp, "%s", (const char*)ped.families[FID[n]]->famid);
-      for(int i = 0; i < dimPC; i++)
-         fprintf(fp, " %.4lf", svd.v[n][idx[dimN-1-i]]);
-      fprintf(fp, "\n");
-   }
-   fclose(fp);
-   printf("%d principal components saved in file %s\n",
-      dimPC, (const char*)filename);
-      }
-      */
-/*
-void Engine::OutputIndividualInfo()
-{
-   double freq;
-   const double MAFe = 0.00000001+minMAF;
-   int freqIndex;
-   Matrix var(ped.count, binCount);
-   Matrix mean(ped.count, binCount);
-   var.Zero();
-   mean.Zero();
-   for(int i = 0; i < ped.count; i++){
-      if(ped[i].ngeno < MINSNPCOUNT ) continue;
-      for(int k = 0; k < binCount; k++){
-         var[i][k] = 2 * freqP[k] * freqQ[k];
-         mean[i][k] = 2 * freqP[k];
-      }
-   }
-
-      String filename = prefix;
-      filename.Add(".var");
-      FILE *fp = fopen(filename, "wt");
-      if(fp == NULL) error("Cannot open %s to write.", (const char*)filename);
-      String filename2 = prefix;
-      filename2.Add(".mean");
-      FILE *fp2 = fopen(filename2, "wt");
-      if(fp2 == NULL) error("Cannot open %s to write.", (const char*)filename2);
-      Vector geno[1000];
-      Vector lambda(binCount);
-      Vector lambda2(binCount);
-      for(int i = 0; i < ped.count; i++){
-         if(ped[i].ngeno < MINSNPCOUNT ) continue;
-         for(int k = 0; k < binCount; k++)
-            geno[k].Dimension(0);
-         for(int m = 0; m < ped.markerCount; m++){
-            if(ped.GetMarkerInfo(m)->freq.Length() != 3) continue;
-            if(!ped[i].isGenotyped(m)) continue;
-            int g = ped[i].markers[m].countAlleles(2);
-            freq = ped.GetMarkerInfo(m)->freq[2];
-            if(freq > 0.5) {
-               freq = 1 - freq;
-               g = 2-g;
-            }
-            if(freq < MAFe) continue;
-            freqIndex = int((freq - MAFe)*binCount/(0.5-minMAF));
-            geno[freqIndex].Push(g);
-         }
-         fprintf(fp, "%s\t%s", (const char*)ped[i].famid, (const char*)ped[i].pid);
-         fprintf(fp2, "%s\t%s", (const char*)ped[i].famid, (const char*)ped[i].pid);
-         lambda.Zero(); lambda2.Zero();
-         for(int k = 0; k < binCount; k++){
-            var[i][k] = geno[k].Var();
-            mean[i][k] = geno[k].Average();
-            for(int j = 0; j < geno[k].Length(); j++)
-               if(geno[k][j]==2) lambda[k]++;
-            lambda[k] = lambda[k] / geno[k].Length() - 0.25 * mean[i][k] * mean[i][k];
-            lambda2[k] = mean[i][k] / (2*freqP[k]);
-         }
-         fprintf(fp, "\t%.4lf", lambda.Average());
-         for(int k = 0; k < binCount; k++)
-            fprintf(fp, "\t%.4lf", lambda[k]);
-         fprintf(fp, "\n");
-         fprintf(fp2, "\t%.4lf", lambda2.Average());
-         for(int k = 0; k < binCount; k++)
-            fprintf(fp2, "\t%.4lf", lambda2[k]);
-         fprintf(fp2, "\n");
-
-      }
-      fclose(fp);
-      printf("Variance for each individual is saved in file %s\n",
-         (const char*)filename);
-      fclose(fp2);
-      printf("Mean for each individual is saved in file %s\n",
-         (const char*)filename2);
-         }
-*/
-/*
-void Engine::mds_family_check()
-{
-   individualInfo = true;
-   BuildBinary();
-   printf("Genotypes stored in %d bytes for each of %d individuals.\n",
-      byteCount, idCount);
-
-   Kinship kin;
-   QuickIndex idx;
-   int id1, id2;
-   Matrix kinship, phi;
-
-   IntArray unrelatedCount;
-   IntArray ID(0), ID_UN(0), ID_unrelated;
-   for(int f = 0; f < ped.familyCount; f++){
-      if(id[f].Length() < 2) {
-         if(id[f].Length() == 1)
-            ID_UN.Push(id[f][0]);
-         ID.Stack(id[f]);
-         continue;
-      }
-      kin.Setup(*ped.families[f]);
-      kinship.Dimension(id[f].Length(), id[f].Length());
-      phi.Dimension(id[f].Length(), id[f].Length());
-      kinship.Set(1);
-      phi.Set(1);
-      for(int i = 0; i < id[f].Length(); i++)
-         for(int j = i+1; j < id[f].Length(); j++){
-            id1 = geno[id[f][i]]; id2 = geno[id[f][j]];
-            if(id1 < 0 || id2 < 0) continue;
-            HetHetCount = IBS0Count = het1Count = 0;
-            for(int m = 0; m < byteCount; m++){
-               HetHet = (~G[0][id1][m]) & (G[1][id1][m]) & (~G[0][id2][m]) & G[1][id2][m];
-               Het1 = (G[0][id2][m] | G[1][id2][m]) & (~G[0][id1][m]) & G[1][id1][m];
-               Het2 = (G[0][id1][m] | G[1][id1][m]) & (~G[0][id2][m]) & G[1][id2][m];
-               IBS0 = G[0][id1][m] & G[0][id2][m] & (G[1][id1][m] ^ G[1][id2][m]);
-               notMissing = (G[0][id1][m] | G[1][id1][m]) & (G[0][id2][m] | G[1][id2][m]);
-               HetHetCount += oneCount[HetHet];
-               het1Count += oneCount[Het1] + oneCount[Het2];
-               IBS0Count += oneCount[IBS0];
-               notMissingCount += oneCount[notMissing];
-            }
-            if(notMissingCount)
-            if(het1Count)
-               kinship[i][j] = kinship[j][i] = (HetHetCount - IBS0Count*2)*1.0/het1Count;
-            phi[i][j] = phi[j][i] = kin(ped[id[f][i]], ped[id[f][j]]);
-         }
-
-      unrelatedCount.Dimension(id[f].Length());
-      unrelatedCount.Zero();
-      for(int i = 0; i < id[f].Length(); i++)
-         for(int j = i+1; j < id[f].Length(); j++)
-            if(phi[i][j] < 0.005 && kinship[i][j] < 0.0221){
-               unrelatedCount[i] ++;
-               unrelatedCount[j] ++;
-            }
-      idx.Index(unrelatedCount);
-      ID_unrelated.Dimension(0);
-      ID_unrelated.Push(idx[unrelatedCount.Length()-1]);
-      for(int i = unrelatedCount.Length()-2; (i >= 0) && (unrelatedCount[idx[i]] > 0); i--){
-         bool isUnrelated = true;
-         for(int j = 0; j < ID_unrelated.Length(); j++)
-            if(phi[idx[i]][ID_unrelated[j]] >= 0.005 || kinship[idx[i]][ID_unrelated[j]] >= 0.0221){
-               isUnrelated = false;
-               break;
-            }
-         if(isUnrelated) ID_unrelated.Push(idx[i]);
-      }
-      for(int i = 0; i < ID_unrelated.Length(); i++)
-         ID_UN.Push(id[f][ID_unrelated[i]]);
-      ID.Stack(id[f]);
-   }
-   int dimN = ID_UN.Length();
-
-   int dimM = 0;
-   for(int m = 0; m < ped.markerCount; m += every){
-      int alleleCount = ped.GetMarkerInfo(m)->freq.Length();
-      if(alleleCount != 3) continue;
-      if(ped.GetMarkerInfo(m)->freq[1] < 0.001 || ped.GetMarkerInfo(m)->freq[1] > 0.999) continue;
-      dimM ++;
-   }
-   Matrix X(dimM, dimN);
-   Matrix Z(dimM, ID.Length());
-   X.Zero(); Z.Zero();
-   int minorAllele;
-   int validSNP=0;
-   int byte, offset;
-   double p, g, mean, se;
-   int k, freqCount;
-
-   for(int m = 0; m < ped.markerCount; m += every){
-      int alleleCount = ped.GetMarkerInfo(m)->freq.Length();
-      if(alleleCount != 3) continue;
-      byte = m/8;
-      offset = m%8;
-
-      p = 0.0;
-      freqCount = 0;
-      for(int i = 0; i < dimN; i++){
-         k = geno[ID_UN[i]];
-         if(k == -1) continue;
-         if(G[1][k][byte] & base[offset]){ // AA or Aa
-            p ++;
-            if(G[0][k][byte] & base[offset]) p ++; // AA
-            freqCount += 2;
-         }else if(G[0][k][byte] & base[offset]) // aa
-            freqCount += 2;
-      }
-      if(freqCount==0) continue;
-      p /= freqCount;
-      if(p > 0.5) p = 1-p;
-      if(p < 0.001) continue;
-      mean = p*2;
-      se = sqrt(2*p*(1-p));
-      if(se < 1E-100) continue;
-
-      for(int i = 0; i < dimN; i++){
-         k = geno[ID_UN[i]];
-         if(k == -1) continue;
-         g = -1.0;
-         if(G[0][k][byte] & base[offset])  // homozygote
-            g = (G[1][k][byte] & base[offset])? 2.0: 0.0;
-         else if(G[1][k][byte] & base[offset])   // Aa
-            g = 1.0;
-         if(g > -0.9) X[validSNP][i] = (g - mean) / se;
-      }
-      for(int i = 0; i < ID.Length(); i++){
-         k = geno[ID[i]];
-         if(k == -1) continue;
-         g = -1.0;
-         if(G[0][k][byte] & base[offset])  // homozygote
-            g = (G[1][k][byte] & base[offset])? 2.0: 0.0;
-         else if(G[1][k][byte] & base[offset])   // Aa
-            g = 1.0;
-         if(g > -0.9) Z[validSNP][i] = (g - mean) / se;
-      }
-      validSNP++;
-   }
-
-   printf("Dimension of PCA: %d %d\n", dimM, dimN);
-   printf("SVD...");
-   SVD svd;
-   svd.Decompose(X);
-   printf("done\n");
-   if(svd.n == 0) return;
-   idx.Index(svd.w);
-
-   int dimPC = dimN>20?20:dimN;
-   printf("Largest %d eigenvalues:", dimPC);
-   for(int i = 0; i < dimPC; i++)
-      printf(" %.2lf", svd.w[idx[dimN-1-i]]);
-   printf("\n");
-
-   Matrix EV(ID.Length(), dimPC);
-   EV.Zero();
-   for(int i = 0; i < ID.Length(); i++)
-      for(int j = 0; j < dimPC; j++){
-         for(int m = 0; m < dimM; m++)
-            EV[i][j] += Z[m][i] * svd.u[m][idx[dimN-1-j]];
-         if(svd.w[idx[dimN-1-j]] > 1E-10)
-            EV[i][j] /= svd.w[idx[dimN-1-j]];
-      }
-
-   String datfile = prefix;
-   datfile.Add("pc.dat");
-   FILE *fp = fopen(datfile, "wt");
-   if(fp == NULL) error("Cannot open %s to write.", (const char*)datfile);
-   fprintf(fp, "S related\n");
-   for(int i = 0; i < dimPC; i++)
-      fprintf(fp, "C PC%d\n", i+1);
-   fclose(fp);
-
-   String pedfile = prefix;
-   pedfile.Add("pc.ped");
-   fp = fopen(pedfile, "wt");
-   if(fp == NULL) error("Cannot open %s to write.", (const char*)pedfile);
-   IntArray typed(ped.count);
-   typed.Set(-1);
-   for(int i = 0; i < ID.Length(); i++)
-      typed[ID[i]] = i;
-   IntArray inSVD(ped.count);
-   inSVD.Set(-1);
-   for(int i = 0; i < ID_UN.Length(); i++)
-      inSVD[ID_UN[i]] = i;
-   for(int i = 0; i < ped.count; i++){
-      fprintf(fp, "%s %s %s %s %d",
-         (const char*)ped[i].famid, (const char*)ped[i].pid,
-         (const char*)ped[i].fatid, (const char*)ped[i].motid,
-         ped[i].sex);
-      if(typed[i] == -1)
-         for(int j = 0; j < dimPC+1; j++)
-            fprintf(fp, " X");
-      else{
-         if(inSVD[i]!=-1) fprintf(fp, " 1"); // unrelated in SVD
-         else fprintf(fp, " 2"); // related in PCA
-         for(int j = 0; j < dimPC; j++)
-            fprintf(fp, " %.4lf", EV[typed[i]][j]);
-      }
-      fprintf(fp, "\n");
-   }
-   fclose(fp);
-   printf("%d principal components saved in files %s and %s\n",
-      dimPC, (const char*)datfile, (const char*)pedfile);
-} */
-
-/*
-   for(int f = 0; f < ped.familyCount; f++){
-      ID_unrelated.Dimension(0);
-      ID_related.Dimension(0);
-      flagged.Dimension(ped.families[f]->last - ped.families[f]->first + 1);
-      flagged.Zero();
-      for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++)
-         if(ped[i].ngeno >= MINSNPCOUNT){
-            if(ped[i].isFounder()){
-               ID_unrelated.Push(i);
-               flagged[i-ped.families[f]->first] = 1;
-            }
-         }
-      kin.Setup(*ped.families[f]);
-      for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++){
-         if(ped[i].ngeno < MINSNPCOUNT) continue;
-         bool isUnrelated = true;
-         for(int j = 0; j < ID_unrelated.Length(); j++)
-            if(kin(ped[i], ped[ID_unrelated[j]]) > 0) {
-               isUnrelated = false;
-               break;
-            }
-         if(isUnrelated) {
-            ID_unrelated.Push(i);
-            flagged[i-ped.families[f]->first] = 1;
-         }
-      }
-      for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++)
-         if(ped[i].ngeno >= MINSNPCOUNT && flagged[i-ped.families[f]->first]==0)
-            ID_related.Push(i);
-
-      for(int i = 0; i < ID_unrelated.Length(); i++)
-         for(int j = 0; j < dimPC; j++)
-            EV[totalCount+i][j] = svd.v[unrelatedCount+i][idx[dimN-1-j]];
-
-      for(int i = 0; i < ID_related.Length(); i++){
-         kinship.Dimension(ID_unrelated.Length());
-         for(int j = 0; j < ID_unrelated.Length(); j++)
-            kinship[j] = kin(ped[ID_related[i]], ped[ID_unrelated[j]])*2;
-         for(int j = 0; j < dimPC; j++){
-            temp = 0;
-            for(int k = 0; k < ID_unrelated.Length(); k++){
-               EV[totalCount+ID_unrelated.Length()+i][j] += kinship[k] * svd.v[unrelatedCount+k][idx[dimN-1-j]];
-               temp += kinship[k];
-            }
-            if(temp > 1E-10)
-               EV[totalCount+ID_unrelated.Length()+i][j] /= temp;
-         }
-      }
-
-      unrelatedCount += ID_unrelated.Length();
-      totalCount += ID_unrelated.Length() + ID_related.Length();
-      ID.Stack(ID_unrelated);
-      ID.Stack(ID_related);
-   }
-*/
-/*
-void Engine::mds_family()
-{
-   printf("MDS for family data starts at %s", currentTime());
-   char oneoneCount[65536];
-   for(int i = 0; i < 65536; i++){
-      oneoneCount[i] = 0;
-      for(int j = 0; j < 16; j++)
-         if(i & shortbase[j]) oneoneCount[i]++;
-   }
-   if(detailFlag) countGenotype();
-   if(geno.Length()==0) {
-      individualInfo = true;
-      if(shortFlag) BuildShortBinary();
-      else BuildBinary();
-   }
-   if(shortFlag)
-      printf("Genotypes stored in %d short words for each of %d individuals.\n",
-         shortCount, idCount);
-   else
-      printf("Genotypes stored in %d bytes for each of %d individuals.\n",
-         byteCount, idCount);
-   if(ibsFlag)
-      printf("IBS Distance is used in the MDS analysis.\n");
-   else
-      printf("Euclidean Distance is used in the MDS analysis.\n");
-   Kinship kin;
-   IntArray first(ped.familyCount);
-   IntArray last(ped.familyCount);
-   first.Set(-1); last.Set(-1);
-   IntArray ID(0), ID_UN(0), ID_unrelated;
-   int HetHetCount, IBS0Count, IBS2Count, het1Count, notMissingCount;
-   for(int f = 0; f < ped.familyCount; f++){
-      ID_unrelated.Dimension(0);
-      bool firstFlag = true;
-      for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++)
-         if(ped[i].ngeno >= MINSNPCOUNT){
-            ID.Push(i);
-            if(ped[i].isFounder()){
-               ID_unrelated.Push(i);
-               if(firstFlag){
-                  first[f] = ID_unrelated.Length()-1+ID_UN.Length();
-                  firstFlag = false;
-               }
-            }
-         }
-      kin.Setup(*ped.families[f]);
-      for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++){
-         if(ped[i].ngeno < MINSNPCOUNT) continue;
-         bool isUnrelated = true;
-         for(int j = 0; j < ID_unrelated.Length(); j++)
-            if(kin(ped[i], ped[ID_unrelated[j]]) > 0) {
-               isUnrelated = false;
-               break;
-            }
-         if(isUnrelated) {
-            ID_unrelated.Push(i);
-            if(firstFlag){
-               first[f] = ID_unrelated.Length()-1+ID_UN.Length();
-               firstFlag = false;
-            }
-         }
-//         last[f] = ID_unrelated.Length()-1+ID_UN.Length();
-      }
-      last[f] = ID_unrelated.Length()-1+ID_UN.Length();
-      ID_UN.Stack(ID_unrelated);
-   }
-   int dimN = ID_UN.Length();
-   int id1, id2;
-   Matrix D(dimN, dimN);
-   D.Zero();
-   for(int i = 0; i < dimN; i++){
-      id1 = geno[ID_UN[i]];
-      for(int j = i+1; j < dimN; j++){
-         id2 = geno[ID_UN[j]];
-         if(id1 < 0 || id2 < 0) continue;
-         if(ibsFlag){ // IBS Distance
-            IBS0Count = IBS2Count = notMissingCount = 0;
-            if(shortFlag)
-               for(int m = 0; m < shortCount; m++){
-                  IBS0Count += oneoneCount[GG[0][id1][m] & GG[0][id2][m] & (GG[1][id1][m] ^ GG[1][id2][m])];
-                  IBS2Count += oneoneCount[~(GG[0][id1][m]^GG[0][id2][m]) & ~(GG[1][id1][m]^GG[1][id2][m]) & (GG[0][id1][m] | GG[1][id1][m])];
-                  notMissingCount += oneoneCount[(GG[0][id1][m] | GG[1][id1][m]) & (GG[0][id2][m] | GG[1][id2][m])];
-               }
-            else
-               for(int m = 0; m < byteCount; m++){
-                  IBS0Count += oneCount[G[0][id1][m] & G[0][id2][m] & (G[1][id1][m] ^ G[1][id2][m])];
-                  IBS2Count += oneCount[~(G[0][id1][m]^G[0][id2][m]) & ~(G[1][id1][m]^G[1][id2][m]) & (G[0][id1][m] | G[1][id1][m])];
-                  notMissingCount += oneCount[(G[0][id1][m] | G[1][id1][m]) & (G[0][id2][m] | G[1][id2][m])];
-               }
-            if(notMissingCount)
-               D[i][j] = D[j][i] = 1-(IBS2Count-IBS0Count)*1.0/notMissingCount;
-         }else{ // Euclidean Distance
-            HetHetCount = IBS0Count = het1Count = notMissingCount = 0;
-            if(shortFlag)
-               for(int m = 0; m < shortCount; m++){
-                  HetHetCount += oneoneCount[(~GG[0][id1][m]) & (GG[1][id1][m]) & (~GG[0][id2][m]) & GG[1][id2][m]];
-                  IBS0Count += oneoneCount[GG[0][id1][m] & GG[0][id2][m] & (GG[1][id1][m] ^ GG[1][id2][m])];
-                  notMissingCount += oneoneCount[(GG[0][id1][m] | GG[1][id1][m]) & (GG[0][id2][m] | GG[1][id2][m])];
-                  het1Count += (oneoneCount[(GG[0][id2][m] | GG[1][id2][m]) & (~GG[0][id1][m]) & GG[1][id1][m]]
-                     + oneoneCount[(GG[0][id1][m] | GG[1][id1][m]) & (~GG[0][id2][m]) & GG[1][id2][m]]);
-               }
-            else
-               for(int m = 0; m < byteCount; m++){
-                  HetHetCount += oneCount[(~G[0][id1][m]) & (G[1][id1][m]) & (~G[0][id2][m]) & G[1][id2][m]];
-                  IBS0Count += oneCount[G[0][id1][m] & G[0][id2][m] & (G[1][id1][m] ^ G[1][id2][m])];
-                  notMissingCount += oneCount[(G[0][id1][m] | G[1][id1][m]) & (G[0][id2][m] | G[1][id2][m])];
-                  het1Count += (oneCount[(G[0][id2][m] | G[1][id2][m]) & (~G[0][id1][m]) & G[1][id1][m]]
-                     + oneCount[(G[0][id1][m] | G[1][id1][m]) & (~G[0][id2][m]) & G[1][id2][m]]);
-            }
-            if(notMissingCount)
-               D[i][j] = D[j][i] = (het1Count - 2.0*HetHetCount + 4.0*IBS0Count) / notMissingCount;
-         }
-      }
-   }
-   Vector tempV(dimN);
-   tempV.Zero();
-   for(int j = 0; j < dimN; j++)
-      for(int i = 0; i < dimN; i++)
-         tempV[j] += D[i][j];
-   tempV.Multiply(1.0/dimN);
-   // (I-11'/N) * D
-   for(int i = 0; i < dimN; i++)
-      for(int j = 0; j < dimN; j++)
-         D[i][j] -= tempV[j];
-   tempV.Zero();
-   for(int i = 0; i < dimN; i++)
-      for(int j = 0; j < dimN; j++)
-         tempV[i] += D[i][j];
-   tempV.Multiply(1.0/dimN);
-   // D * (I-11'/N)
-   for(int i = 0; i < dimN; i++)
-      for(int j = 0; j < dimN; j++)
-         D[i][j] -= tempV[i];
-   D.Multiply(-0.5);
-
-   printf("SVD of a %d x %d matrix start...", dimN, dimN);
-   SVD svd;
-   svd.Decompose(D);
-   printf("done\n");
-   if(svd.n == 0) return;
-   QuickIndex idx;
-   idx.Index(svd.w);
-
-   int dimPC = dimN>20?20:dimN;
-   printf("Largest %d eigenvalues:", dimPC);
-   for(int i = 0; i < dimPC; i++)
-      printf(" %.2lf", svd.w[idx[dimN-1-i]]);
-   printf("\n");
-
-   Matrix EV(ID.Length(), dimPC);
-   EV.Zero();
-   ID.Dimension(0);
-
-   IntArray ID_related;
-   IntArray flagged;
-   Vector kinship;
-   double temp;
-
-   flagged.Dimension(ped.count);
-   flagged.Zero();
-   for(int i = 0; i < ID_UN.Length(); i++)
-      flagged[ID_UN[i]] = 1;
-   for(int f = 0; f < ped.familyCount; f++){
-      if(last[f] < 0) continue;
-      kin.Setup(*ped.families[f]);
-      ID_related.Dimension(0);
-      for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++)
-         if(ped[i].ngeno >= MINSNPCOUNT && flagged[i]==0)
-            ID_related.Push(i);
-      for(int i = first[f]; i <= last[f]; i++)
-         for(int j = 0; j < dimPC; j++)
-            EV[geno[ID_UN[i]]][j] = svd.v[i][idx[dimN-1-j]];
-      for(int i = 0; i < ID_related.Length(); i++){
-         kinship.Dimension(last[f]-first[f]+1);
-         for(int j = first[f]; j <= last[f]; j++)
-            kinship[j-first[f]] = kin(ped[ID_related[i]], ped[ID_UN[j]])*2;
-         for(int j = 0; j < dimPC; j++){
-            temp = 0;
-            for(int k = first[f]; k <= last[f]; k++){
-               EV[geno[ID_related[i]]][j] += kinship[k-first[f]] * svd.v[k][idx[dimN-1-j]];
-                 temp += kinship[k-first[f]];
-            }
-            if(temp > 1E-10)
-               EV[geno[ID_related[i]]][j] /= temp;
-         }
-      }
-   }
-
-   String datfile = prefix;
-   datfile.Add("pc.dat");
-   FILE *fp = fopen(datfile, "wt");
-   if(fp == NULL) error("Cannot open %s to write.", (const char*)datfile);
-   fprintf(fp, "S related\n");
-   for(int i = 0; i < dimPC; i++)
-      fprintf(fp, "C PC%d\n", i+1);
-   if(detailFlag){
-      fprintf(fp, "C Heterozygosity\n");
-      fprintf(fp, "C Quality\n");
-   }
-   fclose(fp);
-
-   String pedfile = prefix;
-   pedfile.Add("pc.ped");
-   fp = fopen(pedfile, "wt");
-   if(fp == NULL) error("Cannot open %s to write.", (const char*)pedfile);
-   IntArray inSVD(ped.count);
-   inSVD.Set(-1);
-   for(int i = 0; i < ID_UN.Length(); i++)
-      inSVD[ID_UN[i]] = i;
-   for(int i = 0; i < ped.count; i++){
-      fprintf(fp, "%s %s %s %s %d",
-         (const char*)ped[i].famid, (const char*)ped[i].pid,
-         (const char*)ped[i].fatid, (const char*)ped[i].motid,
-         ped[i].sex);
-      int k = geno[i];
-      if(k == -1){
-         for(int j = 0; j < dimPC+1; j++)
-            fprintf(fp, " X");
-         if(detailFlag)
-            fprintf(fp, " X X");
-      }else{
-         if(inSVD[i]!=-1) fprintf(fp, " 1"); // unrelated in SVD
-         else fprintf(fp, " 2"); // related in PCA
-         for(int j = 0; j < dimPC; j++)
-            fprintf(fp, " %.4lf", EV[k][j]);
-         if(detailFlag)
-            fprintf(fp, " %.3lf %.3lf",
-             pAaCount[k] * 1.0 / (pAACount[k] + pAaCount[k] + paaCount[k]),
-            GetQuality(pAACount[k], pAaCount[k], paaCount[k]));
-      }
-      fprintf(fp, "\n");
-   }
-   fclose(fp);
-   printf("MDS for family data ends at %s", currentTime());
-   printf("%d principal components saved in files %s and %s\n",
-      dimPC, (const char*)datfile, (const char*)pedfile);
-}
-  */
-  
 

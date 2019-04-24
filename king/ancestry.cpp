@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
 // ancestry.cpp
-// (c) 2010-2018 Wei-Min Chen
+// (c) 2010-2019 Wei-Min Chen
 //
 // This file is distributed as part of the KING source code package
 // and may not be redistributed in any form, without prior written
@@ -12,7 +12,7 @@
 //
 // All computer programs have bugs. Use this file at your own risk.
 //
-// August 7, 2018
+// Feb 22, 2019
 
 #include "analysis.h"
 #include <math.h>
@@ -76,7 +76,7 @@ void Engine::OneWindowProjection(int mv_chr, double mv_start, double mv_stop, Ve
    bool flipFlag;
 
    for(int m = 0; m < markerCount; m ++){
-      if(chromosomes[m]!=mv_chr || positions[m] < mv_start || positions[m] >= mv_stop)
+      if(chromosomes[m]!=mv_chr || bp[m] < mv_start || bp[m] >= mv_stop)
          continue;
       byte = m/16;
       offset = m%16;
@@ -208,56 +208,6 @@ void Engine::OneWindowProjection(int mv_chr, double mv_start, double mv_stop, Ve
    for(int i = 0; i < N; i++){
       if(ancestry[i] == 0 || ancestry[i] == 1) continue;
       ancestry[i] = (EV[i][0] - x0) / (x1 - x0);
-   }                                     
-}
-
-
-   /*
-   IntArray segIndex(0), segPartialIndex(0), segMask(0);
-   for(int m = 0; m < markerCount; m+=16){
-      int b = m / 16;
-      int mask = 0;
-      for(int j = 0; j < 16 && m+j < markerCount; j++)
-         if(chromosomes[m+j]==mv_chr && positions[m+j] >= mv_start && positions[m+j] < mv_stop)
-            mask |= (1<<j);
-      if(mask == 65535) segIndex.Push(b);
-      else if(mask !=0){
-         segPartialIndex.Push(b);
-         segMask.Push(mask);
-      }
-   } */
-
-/*
-   for(int i = 0; i < ped.count; i++){
-      if(typed[i] == -1) continue;
-      fprintf(fp, "%s %s %s %s %d",
-         (const char*)ped[i].famid, (const char*)ped[i].pid,
-         (const char*)ped[i].fatid, (const char*)ped[i].motid,
-         ped[i].sex);
-
-      if(inSVD[i]!=-1) fprintf(fp, " 1"); // unrelated in SVD
-      else fprintf(fp, " 2"); // related in PCA
-      for(int j = 0; j < dimPC; j++)
-         fprintf(fp, " %.4lf", EV[typed[i]][j]);
    }
-*/
-
-
-/*
-   IntArray typed(ped.count);
-   typed.Set(-1);
-   for(int i = 0; i < ID.Length(); i++)
-      typed[ID[i]] = i;
-   IntArray inSVD(ped.count);
-   inSVD.Set(-1);
-   for(int i = 0; i < ID_UN.Length(); i++)
-      inSVD[ID_UN[i]] = i;
-      */
-   /*
-   for(int i = 0; i < ped.count; i++)
-      if(ped[i].ngeno >= MINSNPCOUNT){
-         if(ped[i].affections[0]!=2)
-            ID_UN.Push(i);
-         ID.Push(i);
-      }*/
+}
 

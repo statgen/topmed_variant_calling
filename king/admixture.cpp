@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
 // admixture.cpp
-// (c) 2010-2018 Wei-Min Chen
+// (c) 2010-2019 Wei-Min Chen
 //
 // This file is distributed as part of the KING source code package
 // and may not be redistributed in any form, without prior written
@@ -12,7 +12,7 @@
 //
 // All computer programs have bugs. Use this file at your own risk.
 //
-// August 7, 2018
+// Feb 22, 2019
 
 #include "Random.h"
 #include "analysis.h"
@@ -168,11 +168,11 @@ void Engine::AdmixtureMapping(double windowSize, double moveSize)
             "Chr", "Start", "Stop", "N_SNP", "Q_unadj", "P_unadj", "Q_adj", "P_adj");
    }
    for(int chr=0; chr<SEXCHR; chr++){   // by chromosome
-      firstPos=10000000.0; lastPos=0;
+      firstPos=1000000000.0; lastPos=0;
       for(int m = 0; m < markerCount; m++){
          if(chromosomes[m]!=chr) continue;
-         if(positions[m] < firstPos) firstPos = positions[m];
-         if(positions[m] > lastPos) lastPos = positions[m];
+         if(bp[m] < firstPos) firstPos = bp[m];
+         if(bp[m] > lastPos) lastPos = bp[m];
       }
       length = lastPos - firstPos;
       int windowCount =
@@ -186,7 +186,7 @@ void Engine::AdmixtureMapping(double windowSize, double moveSize)
          SNPCount = 0;
          for(int m = 0; m < markerCount; m++){
             if(chromosomes[m]!= chr) continue;
-            if(positions[m] < start || positions[m] >= stop) continue;
+            if(bp[m] < start || bp[m] >= stop) continue;
             SNPCount ++;
             int proposedByte = m/16;
             int proposedBit = m%16;

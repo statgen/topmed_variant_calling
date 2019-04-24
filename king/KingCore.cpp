@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
 // KingCore.cpp
-// (c) 2010-2018 Wei-Min Chen
+// (c) 2010-2019 Wei-Min Chen
 //
 // This file is distributed as part of the KING source code package
 // and may not be redistributed in any form, without prior written
@@ -12,7 +12,7 @@
 //
 // All computer programs have bugs. Use this file at your own risk.
 //
-// August 7, 2018
+// Feb 25, 2019
 
 #include <math.h>
 #include "KingCore.h"
@@ -53,7 +53,7 @@ KingEngine::KingEngine(Pedigree & pedigree):ped(pedigree)
    diagFlag = false;
    callrate = _NAN_;
    exclusionList.Dimension(0);
-   for(int i = 0; i < 3; i++) inclusionList[i].Dimension(0);
+   for(int i = 0; i < 5; i++) inclusionList[i].Dimension(0);
    xsnpName.Dimension(0);
    markerCount = xmarkerCount = ymarkerCount = mtmarkerCount = shortCount = xshortCount = yshortCount = mtshortCount = 0;
    ysnpName.Dimension(0);
@@ -68,6 +68,8 @@ KingEngine::KingEngine(Pedigree & pedigree):ped(pedigree)
    Bit64Flag = false;
    defaultMaxCoreCount=defaultEfficientCoreCount=1;
    SEXCHR=23;
+   lessmemFlag=false;
+   G_SNP = NULL;
 }
 
 KingEngine::~KingEngine()
@@ -757,7 +759,19 @@ void KingEngine::WritePlinkBinary(const char *prefix)
                ped[i].sex,
                (ped.affectionCount && ped[i].affections[0]> 0)?
                   ped[i].affections[0]: -9);
+   int inclusionCount = inclusionList[1].Length();
+   for(int i = 0; i < inclusionCount; i++)
+      if(inclusionList[3][i]!="" || inclusionList[4][i]!=""){
+         fprintf(fp, "%s %s %s %s %d %d\n",
+            (const char*)inclusionList[0][i],
+            (const char*)inclusionList[1][i],
+            inclusionList[3][i]!=""? (const char*)inclusionList[3][i]: 0,
+            inclusionList[4][i]!=""? (const char*)inclusionList[4][i]: 0,
+            (int)inclusionList[2][i], -9);
+         extraCount ++;
+      }
    fclose(fp);
+   printf("  Family file saved in %s\n", (const char*)pedfile);
 
    String covfile = prefix;
    covfile.Add(".cov");
@@ -838,90 +852,152 @@ void KingEngine::WritePlinkBinary(const char *prefix)
          fprintf(fp, "%d\t%s\t0\t%d\t%s\t%s\n",
             chromosomes[m],
             (const char*)snpName[m],
-            int(positions[m] * 1000000+0.5),
+            bp[m], //int(positions[m] * 1000000+0.5),
             (const char*)alleleLabel[0][m],
             (const char*)alleleLabel[1][m]);
    }else
       for(int m = 0; m < markerCount; m++)
          fprintf(fp, "0\tSNP%d\t0\t0\t1\t2\n", m+1);
-   if(xpositions.Length())
+   if(xbp.Length())
       for(int m = 0; m < xmarkerCount; m++)
          fprintf(fp, "%d\t%s\t0\t%d\t%s\t%s\n",
             SEXCHR,
             (const char*)xsnpName[m],
-            int(xpositions[m] * 1000000+0.5),
+            xbp[m], //int(xpositions[m] * 1000000+0.5),
             (const char*)xalleleLabel[0][m],
             (const char*)xalleleLabel[1][m]);
    else
       for(int m = 0; m < xmarkerCount; m++)
          fprintf(fp, "%d\tXSNP%d\t0\t0\t1\t2\n", SEXCHR, m+1);
 
-   if(ypositions.Length())
+   if(ybp.Length())
       for(int m = 0; m < ymarkerCount; m++)
          fprintf(fp, "%d\t%s\t0\t%d\t%s\t%s\n",
             SEXCHR+1, (const char*)ysnpName[m],
-            int(ypositions[m] * 1000000 + 0.5),
+            ybp[m], //int(ypositions[m] * 1000000 + 0.5),
             (const char*)yalleleLabel[0][m],
             (const char*)yalleleLabel[1][m]);
    else
       for(int m = 0; m < ymarkerCount; m++)
          fprintf(fp, "%d\tYSNP%d\t0\t0\t1\t2\n", SEXCHR+1, m+1);
 
-   if(mtpositions.Length())
+   if(mtbp.Length())
       for(int m = 0; m < mtmarkerCount; m++)
          fprintf(fp, "%d\t%s\t0\t%d\t%s\t%s\n",
             SEXCHR+3, (const char*)mtsnpName[m],
-            int(mtpositions[m] * 1000000 + 0.5),
+            mtbp[m], //int(mtpositions[m] * 1000000 + 0.5),
             (const char*)mtalleleLabel[0][m],
             (const char*)mtalleleLabel[1][m]);
    else
       for(int m = 0; m < mtmarkerCount; m++)
          fprintf(fp, "%d\tMTSNP%d\t0\t0\t1\t2\n", SEXCHR+3, m+1);
-
    fclose(fp);
+   printf("  Map file saved in %s\n", (const char*)mapfile);
 
    String bedfile = prefix;
    bedfile.Add(".bed");
    fp = fopen(bedfile, "wb");
    if(fp == NULL)
       error("Cannot open %s to write.", (const char*)bedfile);
-   fprintf(fp, "%c%c%c", 108, 27, 1);
    unsigned char alocus[60000];
    int byte, bit;
    unsigned char g;
-   for(int m = 0; m < markerCount; m++){
-      int b = m / 16;
-      int k = m % 16;
-      for(int i = 0; i < (idCount-1-removeCount+extraCount)/4+1; i++)
-         alocus[i] = 0;
-      byte = bit = 0;
-      for(int f = 0; f < ped.familyCount; f++)
-         for(int i = 0; i < id[f].Length(); i++){
-            if(removeflags[id[f][i]]) continue;
-            if(GG[0][geno[id[f][i]]][b] & shortbase[k]) // homozygote
-               g = (GG[1][geno[id[f][i]]][b] & shortbase[k]) ? 0: 3;
-            else  // heterozygote
-               g = (GG[1][geno[id[f][i]]][b] & shortbase[k])? 2: 1;
-            if(g) alocus[byte] |= (g << bit);
-            if(bit == 6){
-               bit = 0;
-               byte ++;
-            }else
-               bit += 2;
-         }
-      if(extraCount)
-      for(int f = 0; f < ped.familyCount; f++)
-         for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++)
-            if(!removeflags[i] && geno[i] == -1){ // untyped but cannot be removed
-               alocus[byte] |= (1 << bit);
+   char buffer[0x20000];
+   int thread = 0;
+   int pbuffer = 0;
+   pbuffer += sprintf(&buffer[pbuffer], "%c%c%c", 108, 27, 1);
+   if(Bit64==64){
+      for(int m = 0; m < markerCount; m++){
+         int b = m / 64;
+         int k = m % 64;
+         for(int i = 0; i < (idCount-1-removeCount+extraCount)/4+1; i++)
+            alocus[i] = 0;
+         byte = bit = 0;
+         for(int f = 0; f < ped.familyCount; f++)
+            for(int i = 0; i < id[f].Length(); i++){
+               if(removeflags[id[f][i]]) continue;
+               unsigned long long int base = (unsigned long long int)1<<k;
+               if(LG[0][geno[id[f][i]]][b] & base) // homozygote
+                  g = (LG[1][geno[id[f][i]]][b] & base) ? 0: 3;
+               else  // heterozygote
+                  g = (LG[1][geno[id[f][i]]][b] & base)? 2: 1;
+               if(g) alocus[byte] |= (g << bit);
                if(bit == 6){
                   bit = 0;
                   byte ++;
                }else
                   bit += 2;
             }
-      for(int i = 0; i < (idCount-removeCount+extraCount-1)/4+1; i++)
-         fprintf(fp, "%c", alocus[i]);
+         if(extraCount){
+            for(int f = 0; f < ped.familyCount; f++)
+               for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++)
+                  if(!removeflags[i] && geno[i] == -1){ // untyped but cannot be removed
+                     alocus[byte] |= (1 << bit);
+                     if(bit == 6){
+                        bit = 0;
+                        byte ++;
+                     }else
+                        bit += 2;
+                  }
+            for(int i = 0; i < inclusionCount; i++){
+               if(inclusionList[3][i]!="" || inclusionList[4][i]!=""){
+                  alocus[byte] |= (1 << bit);
+                  if(bit == 6){
+                     bit = 0;
+                     byte ++;
+                  }else
+                     bit += 2;
+               }
+            }
+         }
+         for(int i = 0; i < (idCount-removeCount+extraCount-1)/4+1; i++){
+            pbuffer += sprintf(&buffer[pbuffer], "%c", alocus[i]);
+            if(pbuffer > 0xFFFF){  // buffer big enough for writing
+               fwrite(buffer, 1, pbuffer, fp);
+               pbuffer = 0;
+            }
+         }
+      }
+   }else{  // short genotypes for 32 bit system
+      for(int m = 0; m < markerCount; m++){
+         int b = m / 16;
+         int k = m % 16;
+         for(int i = 0; i < (idCount-1-removeCount+extraCount)/4+1; i++)
+            alocus[i] = 0;
+         byte = bit = 0;
+         for(int f = 0; f < ped.familyCount; f++)
+            for(int i = 0; i < id[f].Length(); i++){
+               if(removeflags[id[f][i]]) continue;
+               if(GG[0][geno[id[f][i]]][b] & shortbase[k]) // homozygote
+                  g = (GG[1][geno[id[f][i]]][b] & shortbase[k]) ? 0: 3;
+               else  // heterozygote
+                  g = (GG[1][geno[id[f][i]]][b] & shortbase[k])? 2: 1;
+               if(g) alocus[byte] |= (g << bit);
+               if(bit == 6){
+                  bit = 0;
+                  byte ++;
+               }else
+                  bit += 2;
+            }
+         if(extraCount)
+            for(int f = 0; f < ped.familyCount; f++)
+               for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++)
+                  if(!removeflags[i] && geno[i] == -1){ // untyped but cannot be removed
+                     alocus[byte] |= (1 << bit);
+                     if(bit == 6){
+                        bit = 0;
+                        byte ++;
+                     }else
+                        bit += 2;
+                  }
+         for(int i = 0; i < (idCount-removeCount+extraCount-1)/4+1; i++){
+            pbuffer += sprintf(&buffer[pbuffer], "%c", alocus[i]);
+            if(pbuffer > 0xFFFF){  // buffer big enough for writing
+               fwrite(buffer, 1, pbuffer, fp);
+               pbuffer = 0;
+            }
+         }
+      }
    }
    for(int m = 0; m < xmarkerCount; m++){
       int b = m / 16;
@@ -944,18 +1020,23 @@ void KingEngine::WritePlinkBinary(const char *prefix)
                bit += 2;
          }
       if(extraCount)
-      for(int f = 0; f < ped.familyCount; f++)
-         for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++)
-            if(!removeflags[i] && geno[i] == -1){
-               alocus[byte] |= (1 << bit);
-               if(bit == 6){
-                  bit = 0;
-                  byte ++;
-               }else
-                  bit += 2;
-            }
-      for(int i = 0; i < (idCount-removeCount-1+extraCount)/4+1; i++)
-         fprintf(fp, "%c", alocus[i]);
+         for(int f = 0; f < ped.familyCount; f++)
+            for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++)
+               if(!removeflags[i] && geno[i] == -1){
+                  alocus[byte] |= (1 << bit);
+                  if(bit == 6){
+                     bit = 0;
+                     byte ++;
+                  }else
+                     bit += 2;
+               }
+      for(int i = 0; i < (idCount-removeCount-1+extraCount)/4+1; i++){
+         pbuffer += sprintf(&buffer[pbuffer], "%c", alocus[i]);
+         if(pbuffer > 0xFFFF){  // buffer big enough for writing
+            fwrite(buffer, 1, pbuffer, fp);
+            pbuffer = 0;
+         }
+      }
    }
    for(int m = 0; m < ymarkerCount; m++){
       int b = m / 16;
@@ -978,18 +1059,23 @@ void KingEngine::WritePlinkBinary(const char *prefix)
                bit += 2;
          }
       if(extraCount)
-      for(int f = 0; f < ped.familyCount; f++)
-         for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++)
-            if(!removeflags[i] && geno[i] == -1){
-               alocus[byte] |= (1 << bit);
-               if(bit == 6){
-                  bit = 0;
-                  byte ++;
-               }else
-                  bit += 2;
+         for(int f = 0; f < ped.familyCount; f++)
+            for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++)
+               if(!removeflags[i] && geno[i] == -1){
+                  alocus[byte] |= (1 << bit);
+                  if(bit == 6){
+                     bit = 0;
+                     byte ++;
+                  }else
+                     bit += 2;
+               }
+      for(int i = 0; i < (idCount-removeCount-1+extraCount)/4+1; i++){
+         pbuffer += sprintf(&buffer[pbuffer], "%c", alocus[i]);
+            if(pbuffer > 0xFFFF){  // buffer big enough for writing
+               fwrite(buffer, 1, pbuffer, fp);
+               pbuffer = 0;
             }
-      for(int i = 0; i < (idCount-removeCount-1+extraCount)/4+1; i++)
-         fprintf(fp, "%c", alocus[i]);
+      }
    }
    for(int m = 0; m < mtmarkerCount; m++){
       int b = m / 16;
@@ -1012,26 +1098,33 @@ void KingEngine::WritePlinkBinary(const char *prefix)
                bit += 2;
          }
       if(extraCount)
-      for(int f = 0; f < ped.familyCount; f++)
-         for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++)
-            if(!removeflags[i] && geno[i] == -1){
-               alocus[byte] |= (1 << bit);
-               if(bit == 6){
-                  bit = 0;
-                  byte ++;
-               }else
-                  bit += 2;
-            }
-      for(int i = 0; i < (idCount-removeCount-1+extraCount)/4+1; i++)
-         fprintf(fp, "%c", alocus[i]);
+         for(int f = 0; f < ped.familyCount; f++)
+            for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++)
+               if(!removeflags[i] && geno[i] == -1){
+                  alocus[byte] |= (1 << bit);
+                  if(bit == 6){
+                     bit = 0;
+                     byte ++;
+                  }else
+                     bit += 2;
+               }
+      for(int i = 0; i < (idCount-removeCount-1+extraCount)/4+1; i++){
+         pbuffer += sprintf(&buffer[pbuffer], "%c", alocus[i]);
+         if(pbuffer > 0xFFFF){  // buffer big enough for writing
+            fwrite(buffer, 1, pbuffer, fp);
+            pbuffer = 0;
+         }
+      }
    }
-
+   if(pbuffer>0)
+      fwrite(buffer, 1, pbuffer, fp);
    fclose(fp);
-   printf("Data saved as PLINK binary format in files %s, %s, %s",
-      (const char*)pedfile, (const char*)mapfile, (const char*)bedfile);
-   if(ped.covariateCount || ped.haveTwins) printf(", %s", (const char*)covfile);
-   if(ped.traitCount) printf(", %s", (const char*)phefile);
-   printf("\n");
+   printf("  Binary genotypes saved in %s\n", (const char*)bedfile);
+//   printf("Data saved as PLINK binary format in files %s, %s, %s",
+//      (const char*)pedfile, (const char*)mapfile, (const char*)bedfile);
+//   if(ped.covariateCount || ped.haveTwins) printf(", %s", (const char*)covfile);
+//   if(ped.traitCount) printf(", %s", (const char*)phefile);
+//   printf("\n");
 }
 
 

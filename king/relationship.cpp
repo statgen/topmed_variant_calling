@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
 // relationship.cpp
-// (c) 2010-2018 Wei-Min Chen
+// (c) 2010-2019 Wei-Min Chen
 //
 // This file is distributed as part of the KING source code package
 // and may not be redistributed in any form, without prior written
@@ -12,7 +12,7 @@
 //
 // All computer programs have bugs. Use this file at your own risk.
 //
-// August 23, 2018
+// Feb 27, 2019
 
 #include <math.h>
 #include "analysis.h"
@@ -22,13 +22,8 @@
   #include <omp.h>
 #endif
 
-void Engine::ComputeLongRobustKinship64BitWithFilter(IntArray & ids, bool WriteFlag)
+void Engine::ComputeLongRobustKinship64BitWithFilter(IntArray ids[], bool WriteFlag)
 {
-   if(idCount > 1400000){
-      printf("This version of KING --kinship supports up to %d samples.\n", 1400000);
-      printf("Please contact the KING author to allow an even larger sample size.\n");
-      return;
-   }
    int m1, m2, m3;
    unsigned long long int word, word1, word2;
    const int cutoffMissingCount=markerCount-MINSNPCOUNT;
@@ -101,7 +96,6 @@ void Engine::ComputeLongRobustKinship64BitWithFilter(IntArray & ids, bool WriteF
                   for(word = word1 & (~LG[0][id2][m1]) & LG[1][id2][m1]; word; word &= (word-1), het1Count--);
                }
                kinship = (HetHetCount - IBS0Count*2.0) / het1Count;
-
                phi = kin(ped[id[f][i]], ped[id[f][j]]);
                pi0 = 0.0;
                if(phi < 0.2)
@@ -178,49 +172,69 @@ void Engine::ComputeLongRobustKinship64BitWithFilter(IntArray & ids, bool WriteF
       }
       printf("Relationship inference across families starts at %s", currentTime());
    }
-
    int thread = 0;
-   const int BLOCKSIZE=16;
-   const char SHIFTSIZE=4; // takes up to 1.4 million samples
-   const int CACHESIZE=256;   // cache size: BLOCKSIZE*CACHESIZE*32 = 2^17 = 128KB
-   int localD[5][BLOCKSIZE][BLOCKSIZE];
-   bool stopFlag[BLOCKSIZE][BLOCKSIZE];
-   int threshold[BLOCKSIZE][BLOCKSIZE];
+   int BLOCKSIZE=32;
+   char SHIFTSIZE=5; // takes up to 2.1 million samples
+   int CACHESIZE=128;   // cache size: BLOCKSIZE*CACHESIZE*32 = 2^17 = 128KB
+   if(idCount > (1<<20)){  // sample size over a million
+      int count = (idCount >> 20);
+      int F = 0;
+      for(; count; F++) count >>= 1;
+      BLOCKSIZE <<= F;
+      SHIFTSIZE += F;
+      CACHESIZE >>= F;
+   }
    unsigned int blockCount = (idCount-1)/BLOCKSIZE+1;
    unsigned int loopIndexLength = (blockCount & 1)? blockCount * ((blockCount+1)/2):
       (blockCount/2) * (blockCount+1);
-   unsigned short int **loopIndex = new unsigned short int *[loopIndexLength];
-   for(unsigned int k = 0; k < loopIndexLength; k++)
-      loopIndex[k] = new unsigned short int [2];
+   unsigned int *loopIndex = new unsigned int [loopIndexLength];
    int index = 0;
-   for(int i = 0; i < idCount; i += BLOCKSIZE)
-      for(int j = i; j < idCount; j += BLOCKSIZE){
-         loopIndex[index][0] = (i>>SHIFTSIZE);
-         loopIndex[index][1] = (j>>SHIFTSIZE);
-         index ++;
-      }
+   for(unsigned int i = 0; i < idCount; i += BLOCKSIZE){
+      unsigned int iShifted = (i<<(16-SHIFTSIZE));
+      for(int j = i; j < idCount; j += BLOCKSIZE)
+         loopIndex[index++] = iShifted | (j>>SHIFTSIZE);
+   }
 
 #ifdef _OPENMP
    if(WriteFlag) printf("%d CPU cores are used.\n", defaultMaxCoreCount);
 #endif
-
    IntArray *ibuffer = new IntArray[defaultMaxCoreCount];
    Vector *rbuffer = new Vector[defaultMaxCoreCount];
    for(int c = 0; c < defaultMaxCoreCount; c++){
       ibuffer[c].Dimension(0);
       rbuffer[c].Dimension(0);
    }
+   int firstCount = loopIndexLength / defaultMaxCoreCount;
+   int onepercent = firstCount? (firstCount+99) / 100: 1;
 #ifdef _OPENMP
    #pragma omp parallel num_threads(defaultMaxCoreCount) \
-      private(notMissingCount, id1, id2, m1, m2, m3, thread, word, word1, word2, localD, stopFlag, threshold)
+      private(notMissingCount, id1, id2, m1, m2, m3, thread, word, word1, word2)
 {
    thread = omp_get_thread_num();
+#endif
+   int **localD[5];
+   for(int i = 0; i < 5; i++){
+      localD[i] = new int * [BLOCKSIZE];
+      for(int j = 0; j < BLOCKSIZE; j++)
+         localD[i][j] = new int [BLOCKSIZE];
+   }//   int localD[5][BLOCKSIZE][BLOCKSIZE];
+   int **threshold = new int * [BLOCKSIZE];
+   bool **stopFlag = new bool * [BLOCKSIZE];
+   for(int i = 0; i < BLOCKSIZE; i++){
+      threshold[i] = new int [BLOCKSIZE];
+      stopFlag[i] = new bool [BLOCKSIZE];
+   }//   int threshold[BLOCKSIZE][BLOCKSIZE];
+#ifdef _OPENMP
    #pragma omp for
 #endif
    for(unsigned int k = 0; k < loopIndexLength; k++){
-      int i = ((int)loopIndex[k][0])<<SHIFTSIZE;
+      if(k < firstCount && (k % onepercent) == 0) {
+         printf("%d%%\r", k/onepercent);
+         fflush(stdout);
+      }
+      int i = (loopIndex[k]>>16)<<SHIFTSIZE;
       int iMax = i<idCount-BLOCKSIZE? i+BLOCKSIZE: idCount;
-      int j = ((int)loopIndex[k][1])<<SHIFTSIZE;
+      int j = (loopIndex[k]&0xFFFF)<<SHIFTSIZE;
       int jMax = j<idCount-BLOCKSIZE? j+BLOCKSIZE: idCount;
       int jMin = j;
       for(int c = 0; c < 5; c++)
@@ -313,53 +327,66 @@ void Engine::ComputeLongRobustKinship64BitWithFilter(IntArray & ids, bool WriteF
          }  // end of id2 loop
       }  // end of id1 loop
    }  // end of pair loop
+   for(int i = 0; i < 5; i++){
+      for(int j = 0; j < BLOCKSIZE; j++)
+         delete []localD[i][j];
+      delete []localD[i];
+   }
+   for(int i = 0; i < BLOCKSIZE; i++){
+      delete []stopFlag[i];
+      delete []threshold[i];
+   }
+   delete []stopFlag;
+   delete []threshold;
 #ifdef _OPENMP
 }  // extra bracket for omp
 #endif
-   for(unsigned int k = 0; k < loopIndexLength; k++)
-      delete []loopIndex[k];
    delete []loopIndex;
    delete []missingInOnePersonCount;
    delete []hetInOnePersonCount;
-
    if(WriteFlag){
+      int pbuffer = 0;
+      char buffer[0x20000];
       outfile.Copy(prefix);
       outfile.Add(".kin0");
-      fp = fopen(outfile, "wt");
-      fprintf(fp, "FID1\tID1\tFID2\tID2\tN_SNP\tHetHet\tIBS0\tKinship\n");
-      int count;
-      int totalpairCount=0;
-      for(int c = 0; c < defaultMaxCoreCount; c++){
-         count = ibuffer[c].Length()/3;
-         for(int i = 0; i < count; i++){
-            id1 = ibuffer[c][i*3];
-            id2 = ibuffer[c][i*3+1];
-            fprintf(fp, "%s\t%s\t%s\t%s\t%d\t%.4lf\t%.4lf\t%.4lf\n",
-               (const char*)ped[phenoid[id1]].famid, (const char*)ped[phenoid[id1]].pid,
-               (const char*)ped[phenoid[id2]].famid, (const char*)ped[phenoid[id2]].pid,
-               ibuffer[c][i*3+2],
-               rbuffer[c][i*3], rbuffer[c][i*3+1], rbuffer[c][i*3+2]);
-         }
-         totalpairCount += count;
-      }
-      fclose(fp);
-      printf("                                         ends at %s", currentTime());
-      printf("Between-family kinship data (up to degree %d, %d pairs in total) saved in file %s\n",
-         relativedegree, totalpairCount, (const char*)outfile);
-   }else{
-      ids.Dimension(0);
+      fp = fopen(outfile, "wb");
+      pbuffer += sprintf(&buffer[pbuffer], "FID1\tID1\tFID2\tID2\tN_SNP\tHetHet\tIBS0\tKinship\n");
+      long long int totalpairCount=0;
       for(int c = 0; c < defaultMaxCoreCount; c++){
          int count = ibuffer[c].Length()/3;
          for(int i = 0; i < count; i++){
-            ids.Push(ibuffer[c][i*3]);
-            ids.Push(ibuffer[c][i*3+1]);
+            id1 = phenoid[ibuffer[c][i*3]];
+            id2 = phenoid[ibuffer[c][i*3+1]];
+            pbuffer += sprintf(&buffer[pbuffer], "%s\t%s\t%s\t%s\t%d\t%.4lf\t%.4lf\t%.4lf\n",
+               (const char*)ped[id1].famid, (const char*)ped[id1].pid,
+               (const char*)ped[id2].famid, (const char*)ped[id2].pid,
+               ibuffer[c][i*3+2],
+               rbuffer[c][i*3], rbuffer[c][i*3+1], rbuffer[c][i*3+2]);
+            if(pbuffer > 0xFFFF){
+               fwrite(buffer, 1, pbuffer, fp);
+               pbuffer = 0;
+            }
+         }
+         totalpairCount += count;
+      }
+      if(pbuffer) fwrite(buffer, 1, pbuffer, fp);
+      fclose(fp);
+      printf("                                         ends at %s", currentTime());
+      printf("Between-family kinship data (up to degree %d, %lli pairs in total) saved in file %s\n",
+         relativedegree, totalpairCount, (const char*)outfile);
+   }else{
+      for(int c = 0; c < defaultMaxCoreCount; c++){
+         ids[c].Dimension(0);
+         int count = ibuffer[c].Length()/3;
+         for(int i = 0; i < count; i++){
+            ids[c].Push(ibuffer[c][i*3]);
+            ids[c].Push(ibuffer[c][i*3+1]);
          }
       }
    }
    delete []ibuffer;
    delete []rbuffer;
 }
-
 
 Engine::Engine(Pedigree &pedigree):KingEngine(pedigree)
 {
@@ -409,6 +436,7 @@ Engine::Engine(Pedigree &pedigree):KingEngine(pedigree)
    lessmemFlag = false;
    prevalence = _NAN_;
    mincons = 0;
+   rplotFlag = false;
 }
 
 Engine::~Engine()
@@ -441,10 +469,6 @@ void Engine::ComputeExtendedIBS64Bit()
       printf("\t--prefix %s\n", (const char*)prefix);
    printf("\n");
 
-   // Prepare segment analysis
-//   IntArray chrSeg;
-//   double totalLength;
-//   String segmessage;
    bool IBDvalidFlag = PreSegment(/*chrSeg, totalLength, segmessage*/);
    if(!IBDvalidFlag)
       printf("%s\n", (const char*)segmessage);
@@ -641,6 +665,8 @@ void Engine::ComputeExtendedIBS64Bit()
       fprintf(fps[0], "\tMaxIBD2\tPr_IBD2");
    fprintf(fps[0],"\n");
    int loopIndexLength = loopIndex[0].Length();
+   int firstCount = loopIndexLength / defaultMaxCoreCount;
+   int onepercent = firstCount? (firstCount+99) / 100: 1;
 #ifdef _OPENMP
    #pragma omp parallel num_threads(defaultMaxCoreCount) \
       private(HetHomCount, IBS0Count, notMissingCount, het1Count, het2Count, \
@@ -650,6 +676,10 @@ void Engine::ComputeExtendedIBS64Bit()
    #pragma omp for
 #endif
    for(int k = 0; k < loopIndexLength; k++){
+      if(k < firstCount && (k % onepercent) == 0) {
+         printf("%d%%\r", k/onepercent);
+         fflush(stdout);
+      }
       int i = loopIndex[0][k];
       int iMax = i<idCount-BLOCKSIZE? i+BLOCKSIZE: idCount;
       int j = loopIndex[1][k];
@@ -775,11 +805,6 @@ void Engine::ComputeExtendedIBS64Bit()
 
 void Engine::ComputeLongRobustKinship64Bit()
 {
-   if(idCount > 1400000){
-      printf("This version of KING --kinship supports up to %d samples.\n", 1400000);
-      printf("Please contact the KING author to allow an even larger sample size.\n");
-      return;
-   }
    printf("Autosome genotypes stored in %d", longCount);
    printf(" words for each of %d individuals.\n", idCount);
 
@@ -906,7 +931,6 @@ void Engine::ComputeLongRobustKinship64Bit()
                }
             }else
                afterCount[4] ++;
-
             fprintf(fp, "%s\t%s\t%s\t%d\t%.3lf\t%.4lf\t%.3lf\t%.4lf\t%.4lf\t%G\n",
                (const char*)ped[id[f][i]].famid, (const char*)ped[id[f][i]].pid,
                (const char*)ped[id[f][j]].pid, notMissingCount, pi0, phi,
@@ -941,57 +965,73 @@ void Engine::ComputeLongRobustKinship64Bit()
    outfile.Copy(prefix);
    outfile.Add(".kin0");
 
-   const int BLOCKSIZE=16;
-   const char SHIFTSIZE=4; // takes up to 1.4 million samples
-   const int CACHESIZE=256;   // cache size: BLOCKSIZE*CACHESIZE*32 = 2^17 = 128KB
-   int localD[5][BLOCKSIZE][BLOCKSIZE];
+   int BLOCKSIZE=32;
+   char SHIFTSIZE=5; // takes up to 2.1 million samples
+   int CACHESIZE=128;   // cache size: BLOCKSIZE*CACHESIZE*32 = 2^17 = 128KB
+   if(idCount > (1<<20)){  // sample size over a million
+      int count = (idCount >> 20);
+      int F = 0;
+      for(; count; F++) count >>= 1;
+      BLOCKSIZE <<= F;
+      SHIFTSIZE += F;
+      CACHESIZE >>= F;
+   }
    unsigned int blockCount = (idCount-1)/BLOCKSIZE+1;
    unsigned int loopIndexLength = (blockCount & 1)? blockCount * ((blockCount+1)/2):
       (blockCount/2) * (blockCount+1);
-   unsigned short int **loopIndex = new unsigned short int *[loopIndexLength];
-   for(unsigned int k = 0; k < loopIndexLength; k++)
-      loopIndex[k] = new unsigned short int [2];
+   unsigned int *loopIndex = new unsigned int [loopIndexLength];
    int index = 0;
-   for(int i = 0; i < idCount; i += BLOCKSIZE)
-      for(int j = i; j < idCount; j += BLOCKSIZE){
-         loopIndex[index][0] = (i>>SHIFTSIZE);
-         loopIndex[index][1] = (j>>SHIFTSIZE);
-         index ++;
-      }
-
+   for(unsigned int i = 0; i < idCount; i += BLOCKSIZE){
+      unsigned int iShifted = (i<<(16-SHIFTSIZE));
+      for(int j = i; j < idCount; j += BLOCKSIZE)
+         loopIndex[index++] = iShifted | (j>>SHIFTSIZE);
+   }
+   int firstCount = loopIndexLength / defaultMaxCoreCount;
+   int onepercent = firstCount? (firstCount+99) / 100: 1;
+   StringArray outfiles;
+   fps = new FILE *[defaultMaxCoreCount];
+   int pbuffer = 0;
+   char buffer[0x20000];
 #ifdef _OPENMP
    printf("%d CPU cores are used.\n", defaultMaxCoreCount);
-#endif
-
-   StringArray outfiles;
-   IntArray *ibuffer;
-   Vector *rbuffer;
-   fps = new FILE *[defaultMaxCoreCount];
-#ifdef _OPENMP
    outfiles.Dimension(defaultMaxCoreCount);
    for(int c = 1; c < defaultMaxCoreCount; c++){
       outfiles[c].Copy(prefix);
       outfiles[c] += (c+1);
       outfiles[c].Add("$$$.kin0");
-      fps[c] = fopen(outfiles[c], "wt");
+      fps[c] = fopen(outfiles[c], "wb");
    }
 #else
    fps = new FILE *[1];
 #endif
-   fps[0] = fopen(outfile, "wt");
-   fprintf(fps[0], "FID1\tID1\tFID2\tID2\tN_SNP\tHetHet\tIBS0\tKinship\n");
+   fps[0] = fopen(outfile, "wb");
 #ifdef _OPENMP
    #pragma omp parallel num_threads(defaultMaxCoreCount) \
       private(HetHomCount, IBS0Count, notMissingCount, het1Count, het2Count, \
-      id1, id2, m1, m2, m3, thread, word, word1, word2, localD)
+      id1, id2, m1, m2, m3, thread, word, word1, word2, buffer, pbuffer)
 {
+   pbuffer = 0;
    thread = omp_get_thread_num();
+   if(thread==0)
+      pbuffer += sprintf(&buffer[pbuffer], "FID1\tID1\tFID2\tID2\tN_SNP\tHetHet\tIBS0\tKinship\n");
+#endif
+   int **localD[5];
+   for(int i = 0; i < 5; i++){
+      localD[i] = new int * [BLOCKSIZE];
+      for(int j = 0; j < BLOCKSIZE; j++)
+         localD[i][j] = new int [BLOCKSIZE];
+   }//   int localD[5][BLOCKSIZE][BLOCKSIZE];
+#ifdef _OPENMP
    #pragma omp for
 #endif
    for(unsigned int k = 0; k < loopIndexLength; k++){
-      int i = ((int)loopIndex[k][0])<<SHIFTSIZE;
+      if(k < firstCount && (k % onepercent) == 0) {
+         printf("%d%%\r", k/onepercent);
+         fflush(stdout);
+      }
+      int i = ((loopIndex[k]>>16)<<SHIFTSIZE);
       int iMax = i<idCount-BLOCKSIZE? i+BLOCKSIZE: idCount;
-      int j = ((int)loopIndex[k][1])<<SHIFTSIZE;
+      int j = ((loopIndex[k]&0xFFFF)<<SHIFTSIZE);
       int jMax = j<idCount-BLOCKSIZE? j+BLOCKSIZE: idCount;
       int jMin = j;
       for(int c = 0; c < 5; c++)
@@ -1058,40 +1098,49 @@ void Engine::ComputeLongRobustKinship64Bit()
             m3 = het1Count < het2Count? het1Count: het2Count;
             double kinship = (m3 == 0? 0.0: 0.5 - (localD[0][ii][jj]*0.25+localD[4][ii][jj]) / m3);
             notMissingCount = localD[3][ii][jj];
-            fprintf(fps[thread], "%s\t%s\t%s\t%s\t%d\t%.4lf\t%.4lf\t%.4lf\n",
+            pbuffer += sprintf(&buffer[pbuffer], "%s\t%s\t%s\t%s\t%d\t%.4lf\t%.4lf\t%.4lf\n",
                (const char*)ped[phenoid[id1]].famid, (const char*)ped[phenoid[id1]].pid,
                (const char*)ped[phenoid[id2]].famid, (const char*)ped[phenoid[id2]].pid,
                notMissingCount,
                (het1Count+het2Count-localD[0][ii][jj])*0.5/notMissingCount,
                localD[4][ii][jj]*1.0/notMissingCount,
                kinship);
+            if(pbuffer > 0xFFFF){
+               fwrite(buffer, 1, pbuffer, fps[thread]);
+               pbuffer=0;
+            }
          }
       }
    }
+   for(int i = 0; i < 5; i++){
+      for(int j = 0; j < BLOCKSIZE; j++)
+         delete []localD[i][j];
+      delete []localD[i];
+   }
+   if(pbuffer>0)
+      fwrite(buffer, 1, pbuffer, fps[thread]);
+   fclose(fps[thread]);
 #ifdef _OPENMP
 }  // extra bracket for omp
 #endif
-   for(unsigned int k = 0; k < loopIndexLength; k++)
-      delete []loopIndex[k];
    delete []loopIndex;
    int totalpairCount=0;
 #ifdef _OPENMP
-   for(int c = 0; c < defaultMaxCoreCount; c++)
-      fclose(fps[c]);
-   fps[0] = fopen(outfile, "at");
-   char buffer[1024];
+   FILE *fp0 = fopen(outfile, "ab");
    for(int c = 1; c < defaultMaxCoreCount; c++){
-      fps[c] = fopen(outfiles[c], "rt");
-      while(fgets(buffer, 1024, fps[c]) != NULL){
-         fputs(buffer, fps[0]);
-      }
-      fclose(fps[c]);
+      FILE *fp = fopen(outfiles[c], "rb");
+      int count = fread(buffer, 1, 0x20000, fp);
+      for(; count == 0x20000; count = fread(buffer, 1, 0x20000, fp))
+         fwrite(buffer, 1, 0x20000, fp0);
+      if(count)
+         fwrite(buffer, 1, count, fp0);
+      fclose(fp);
       remove(outfiles[c]);
    }
+   fclose(fp0);
 #endif
    delete []missingInOnePersonCount;
    delete []hetInOnePersonCount;
-   fclose(fps[0]);
    delete []fps;
    printf("                                         ends at %s", currentTime());
    printf("Between-family kinship data saved in file %s\n", (const char*)outfile);
@@ -2153,7 +2202,7 @@ void Engine::ComputeShortFastHomoKinship()
       missingWordInOnePerson = new unsigned int *[idCount];
       missingWordInOnePersonCount = new int [idCount];
       for(int i = 0; i < idCount; i++)
-         missingWordInOnePersonCount[i] = 0;                  
+         missingWordInOnePersonCount[i] = 0;
       IntArray tArray;
       for(int i = 0; i < idCount; i++){
          tArray.Dimension(0);
@@ -2393,7 +2442,9 @@ for(int i = 0; i < idCount; i += BLOCKSIZE)
 #endif
    fps[0] = fopen(outfile, "wt");
    fprintf(fps[0], "FID1\tID1\tFID2\tID2\tN_SNP\tIBD0\tIBD1\tIBD2\tKinship\n");
-int loopIndexLength = loopIndex[0].Length();
+   int loopIndexLength = loopIndex[0].Length();
+   int firstCount = loopIndexLength / defaultMaxCoreCount;
+   int onepercent = firstCount? (firstCount+99) / 100: 1;
 #ifdef _OPENMP
    #pragma omp parallel num_threads(defaultMaxCoreCount) \
       private(HetHomCount, IBS0Count, notMissingCount, het1Count, het2Count, \
@@ -2410,6 +2461,10 @@ int loopIndexLength = loopIndex[0].Length();
    #pragma omp for
 #endif
    for(int k = 0; k < loopIndexLength; k++){
+      if(k < firstCount && (k % onepercent) == 0) {
+         printf("%d%%\r", k/onepercent);
+         fflush(stdout);
+      }
       int i = loopIndex[0][k];
       int iMax = i<idCount-BLOCKSIZE? i+BLOCKSIZE: idCount;
       int j = loopIndex[1][k];
@@ -2804,8 +2859,7 @@ void Engine::ComputeShortRobustXKinship()
    outfile.Copy(prefix);
    outfile.Add("X.kin0");
    fp = fopen(outfile, "wt");
-   fprintf(fp, "FID1\tID1\tFID2\tID2\tSex\tN_SNP\tHet\tIBS0\tKinshipX");
-   fprintf(fp, "\n");
+   fprintf(fp, "FID1\tID1\tFID2\tID2\tSex\tN_SNP\tHet\tIBS0\tKinshipX\n");
    for(int b = 0; b < buffers.Length(); b++)
       buffers[b].Write(fp);
    fclose(fp);
@@ -2822,13 +2876,6 @@ void Engine::printRelationship(int *beforeCount, int *afterCount)
    }
    if(beforeTotal || afterTotal){
       printf("\n");
-/*
-      if(errorrateCutoff != _NAN_)
-         printf("Cutoff value to distinguish between PO and FS is set at IBS0=%.4lf\n",
-            errorrateCutoff);
-      else
-         printf("Error rate to distinguish between PO and FS is arbitrarily set at 0.008\n");
-*/
       printf("Relationship summary (total relatives: %d by pedigree, %d by inference)",
          beforeTotal, afterTotal);
       if(beforeCount){
@@ -2846,347 +2893,4 @@ void Engine::printRelationship(int *beforeCount, int *afterCount)
       }
    }
 }
-/*
-void Engine::ComputeShortFastHomoKinship()
-{
-   char oneoneCount[65536];
-   for(int i = 0; i < 65536; i++)
-      oneoneCount[i] = oneCount[i&255] + oneCount[(i>>8)&255];
-   AfterBinaryLoaded();
-   printf("Autosome genotypes stored in %d words for each of %d individuals.\n",
-      shortCount, idCount);
-
-   printf("\nOptions in effect:\n");
-   printf("\t--homo\n");
-   if(CoreCount)
-      printf("\t--cpus %d\n", CoreCount);
-   if(lessmemFlag)
-      printf("\t--lessmem\n");
-   if(prefix!="king")
-      printf("\t--prefix %s\n", (const char*)prefix);
-   printf("\n");
-
-   double *pq = new double[shortCount*16];
-   double *p2q2 = new double[shortCount*16];
-   for(int i = 0; i < shortCount*16; i++)
-      pq[i] = p2q2[i] = 0;
-   double pqTotal = 0;
-   double p2q2Total = 0;
-
-   // Compute frequency here
-   Vector frequencies;
-   ComputeAlleleFrequency(frequencies);
-
-   for(int m = 0; m < markerCount; m++){
-      double freq = frequencies[m];
-      pq[m] = freq * (1-freq);
-      p2q2[m] = pq[m]*pq[m];
-      pqTotal += pq[m];
-      p2q2Total += p2q2[m];
-   }
-
-   int id1, id2, pos;
-   unsigned short int notMissing, missing;
-   double *pqTotals = new double[idCount];
-   double *p2q2Totals = new double[idCount];
-   for(int i = 0; i < idCount; i++)
-      pqTotals[i] = p2q2Totals[i] = 0;
-
-   for(int f = 0; f < ped.familyCount; f++)
-      for(int i = 0; i < id[f].Length(); i++){
-         id1 = geno[id[f][i]];
-         for(int m = 0; m < shortCount; m++){
-            missing = (~GG[0][id1][m]) & (~GG[1][id1][m]);
-            for(int k = 0; k < 16; k++)
-               if(missing & shortbase[k]){
-                  pos = m*16+k;
-                  pqTotals[id1] += pq[pos];
-                  p2q2Totals[id1] += p2q2[pos];
-               }
-         }
-         pqTotals[id1] = pqTotal - pqTotals[id1];
-         p2q2Totals[id1] = p2q2Total - p2q2Totals[id1];
-      }
-   String outfile;
-   outfile.Copy(prefix);
-   outfile.Add(".kin");
-   FILE *fp = fopen(outfile, "wt");
-   fprintf(fp, "FID\tID1\tID2\tN_SNP\tZ0\tPhi\tIBD0");
-   if(ibdFlag) fprintf(fp, "\tIBD1\tIBD2");
-   fprintf(fp, "\tKinship\tError\n");
-   double kinship, inflation;
-
-   Kinship kin;
-   int HetHetCount, IBS0Count, het1Count, notMissingCount;
-   double phi, pi0, errorFlag;
-   double pqSum, p2q2Sum, ibd0;
-   int rpCount = 0;
-   for(int f = 0; f < ped.familyCount; f++){
-      kin.Setup(*ped.families[f]);
-      for(int i = 0; i < id[f].Length(); i++)
-         for(int j = i+1; j < id[f].Length(); j++){
-            id1 = geno[id[f][i]]; id2 = geno[id[f][j]];
-            IBS0Count = notMissingCount = het1Count = 0;
-            pqSum = p2q2Sum = 0;
-            for(int m = 0; m < shortCount; m++){
-               notMissing = (GG[0][id1][m] | GG[1][id1][m]) & (GG[0][id2][m] | GG[1][id2][m]);
-               IBS0Count += oneoneCount[GG[0][id1][m] & GG[0][id2][m] & (GG[1][id1][m] ^ GG[1][id2][m])];
-               notMissingCount += oneoneCount[notMissing];
-               het1Count += oneoneCount[(GG[0][id2][m] & (~GG[0][id1][m]) & GG[1][id1][m]) |
-                  (GG[0][id1][m] & (~GG[0][id2][m]) & GG[1][id2][m]) ];
-               missing = ~notMissing & (GG[0][id1][m] | GG[1][id1][m] | GG[0][id2][m] | GG[1][id2][m]);
-               if(missing) // one is missing and one is not
-                  for(int k = 0; k < 16; k++)
-                     if(missing & shortbase[k]){
-                        pqSum += pq[m*16+k];
-                        p2q2Sum += p2q2[m*16+k];
-                     }
-            }
-            pqSum = (pqTotals[id1] + pqTotals[id2] - pqSum) * 0.5;
-            p2q2Sum = (p2q2Totals[id1] + p2q2Totals[id2] - p2q2Sum) * 0.5;
-            kinship = 0.5 - (het1Count+4*IBS0Count)*0.125/pqSum;
-            ibd0 = IBS0Count * 0.5 / p2q2Sum;
-            phi = kin(ped[id[f][i]], ped[id[f][j]]);
-            pi0 = 0.0;
-            if(phi < 0.2)
-               pi0 = 1-4*phi;
-            else if(phi < 0.3 && ped[id[f][i]].isSib(ped[id[f][j]]))
-               pi0 = 0.25;
-            errorFlag = 0;
-            inflation = (phi > 0)? kinship / phi: -1;
-
-            if(phi > 0.03){  // up to 4th-degree relative
-               if(inflation > 2 || inflation < 0.5)
-                  errorFlag = 1;
-               else if(inflation > 1.4142 || inflation < 0.70711)
-                  errorFlag = 0.5;
-            }else if(phi < 0.005){  // unrelated pair
-               if(kinship > 0.044) errorFlag = 1;
-               else if(kinship > 0.022) errorFlag = 0.5;
-            }else{   // distant relatives
-               if(kinship < -0.022) errorFlag = 1;
-               else errorFlag = 0.5;
-            }
-            // "if(!notMissingCount) continue" might be needed
-            fprintf(fp, "%s\t%s\t%s\t%d\t%.3lf\t%.4lf\t%.3lf",
-               (const char*)ped[id[f][i]].famid, (const char*)ped[id[f][i]].pid,
-               (const char*)ped[id[f][j]].pid, notMissingCount, pi0, phi, ibd0);
-            if(ibdFlag)
-               fprintf(fp, "\t%.3lf\t%.3lf",
-                  2-2*ibd0-4*kinship, 4*kinship+ibd0-1);
-            fprintf(fp, "\t%.4lf\t%G", kinship, errorFlag);
-            fprintf(fp, "\n");
-            rpCount ++;
-         }
-   }
-   fclose(fp);
-   if(rpCount)
-      printf("Within-family kinship data saved in file %s\n", (const char*)outfile);
-   else
-      printf("Each family consists of one individual.\n");
-
-   if(ped.familyCount < 2) {
-      if(ped.familyCount==1 && ped.families[0]->famid=="0")
-         warning("All individuals with family ID 0 are considered as relatives.\n");
-      if(xmarkerCount >= MINSNPCOUNT){
-         printf("\nX-chromosome analysis...\n");
-         ComputeShortFastXHomoKinship();
-      }
-      printf("There is only one family.\n");
-      return;
-   }
-
-   printf("Relationship inference across families starts at %s", currentTime());
-
-   int thread = 0;
-   FILE **fps;
-   outfile.Copy(prefix);
-   outfile.Add(".kin0");
-  IntArray ompindex(idCount-1);
-#ifdef _OPENMP
-   for(int i = 0; i < (idCount-1)/2; i++){
-      ompindex[2*i] = i;
-      ompindex[2*i+1] = idCount-2-i;
-   }
-   if(idCount%2==0)
-      ompindex[idCount-2] = (idCount-1)/2;
-#else
-   for(int i = 0; i < idCount-1; i++)
-      ompindex[i] = i;
-#endif
-#ifdef _OPENMP
-   printf("%d CPU cores are used.\n", defaultMaxCoreCount);
-   fps = new FILE *[defaultMaxCoreCount];
-   StringArray outfiles(defaultMaxCoreCount);
-   for(int c = 1; c < defaultMaxCoreCount; c++){
-      outfiles[c].Copy(prefix);
-      outfiles[c] += (c+1);
-      outfiles[c].Add("$$$.kin0");
-      fps[c] = fopen(outfiles[c], "wt");
-   }
-#else
-   fps = new FILE *[1];
-#endif
-   fps[0] = fopen(outfile, "wt");
-   fprintf(fps[0], "FID1\tID1\tFID2\tID2\tN_SNP\tIBD0");
-   if(ibdFlag) fprintf(fps[0], "\tIBD1\tIBD2");
-   fprintf(fps[0], "\tKinship\n");
-#ifdef _OPENMP
-   #pragma omp parallel for num_threads(defaultMaxCoreCount) \
-      private(IBS0Count, het1Count, notMissingCount, id1, id2, missing, \
-         notMissing, pqSum, p2q2Sum, ibd0, kinship, thread)
-#endif
-   for(int i = 0; i < idCount-1; i++){
-      id1 = ompindex[i];
-      if(ped[phenoid[id1]].ngeno==0) continue;
-      for(id2 = id1 + 1; id2 < idCount; id2++){
-         if(ped[phenoid[id2]].ngeno==0) continue;
-         if(ped[phenoid[id1]].famid == ped[phenoid[id2]].famid) continue;
-         IBS0Count = notMissingCount = het1Count = 0;
-         pqSum = p2q2Sum = 0;
-         for(int m = 0; m < shortCount; m++){
-            notMissing = (GG[0][id1][m] | GG[1][id1][m]) & (GG[0][id2][m] | GG[1][id2][m]);
-            IBS0Count += oneoneCount[GG[0][id1][m] & GG[0][id2][m] & (GG[1][id1][m] ^ GG[1][id2][m])];
-            notMissingCount += oneoneCount[notMissing];
-            het1Count += oneoneCount[(GG[0][id2][m] & (~GG[0][id1][m]) & GG[1][id1][m]) |
-                  (GG[0][id1][m] & (~GG[0][id2][m]) & GG[1][id2][m]) ];
-            missing = ~notMissing & (GG[0][id1][m] | GG[1][id1][m] | GG[0][id2][m] | GG[1][id2][m]);
-            if(missing)
-               for(int k = 0; k < 16; k++)
-                  if(missing & shortbase[k]){
-                     pqSum += pq[m*16+k];
-                     p2q2Sum += p2q2[m*16+k];
-                  }
-         }
-         pqSum = (pqTotals[id1] + pqTotals[id2] - pqSum) * 0.5;
-         p2q2Sum = (p2q2Totals[id1] + p2q2Totals[id2] - p2q2Sum) * 0.5;
-         kinship = 0.5 - (het1Count+4*IBS0Count)*0.125/pqSum;
-         ibd0 = IBS0Count * 0.5 / p2q2Sum;
-
-#ifdef _OPENMP
-         thread = omp_get_thread_num();
-#endif
-         fprintf(fps[thread], "%s\t%s\t%s\t%s",
-            (const char*)ped[phenoid[id1]].famid, (const char*)ped[phenoid[id1]].pid,
-            (const char*)ped[phenoid[id2]].famid, (const char*)ped[phenoid[id2]].pid);
-         fprintf(fps[thread], "\t%d\t%.3lf", notMissingCount, ibd0);
-         if(ibdFlag)
-            fprintf(fps[thread], "\t%.3lf\t%.3lf",
-               2-2*ibd0-4*kinship, 4*kinship+ibd0-1);
-         fprintf(fps[thread], "\t%.4lf\n", kinship);
-      }
-   }
-#ifdef _OPENMP
-   for(int c = 0; c < defaultMaxCoreCount; c++)
-      fclose(fps[c]);
-   fps[0] = fopen(outfile, "at");
-   char buffer[1024];
-   for(int c = 1; c < defaultMaxCoreCount; c++){
-      fps[c] = fopen(outfiles[c], "rt");
-      while(fgets(buffer, 1024, fps[c]) != NULL){
-         fputs(buffer, fps[0]);
-      }
-      fclose(fps[c]);
-      remove(outfiles[c]);
-   }
-#endif
-   fclose(fps[0]);
-   delete []pq;
-   delete []p2q2;
-   delete []pqTotals;
-   delete []p2q2Totals;
-   printf("                                         ends at %s", currentTime());
-   printf("Between-family kinship data saved in file %s\n", (const char*)outfile);
-   if(xmarkerCount >= MINSNPCOUNT){
-      printf("\nX-chromosome analysis...\n");
-      ComputeShortFastXHomoKinship();
-   }
-}
-*/
-
-/*
-   unsigned int **missingWordInOnePerson = new unsigned int *[idCount];
-   int *missingWordInOnePersonCount = new int[idCount];
-   int *missingInOnePersonCount = new int[idCount];
-   int *hetInOnePersonCount = new int[idCount];
-   int m1, m2, m3;
-   int isum[2];
-   for(int i = 0; i < idCount; i++)
-      missingWordInOnePersonCount[i] = missingInOnePersonCount[i] = hetInOnePersonCount[i] = 0;
-   IntArray tArray;
-   int Mask = (1 << (markerCount % 16))-1;
-   if(markerCount%16==0) Mask = 0xFFFF;
-
-   for(int i = 0; i < idCount; i++){
-      tArray.Dimension(0);
-      isum[0] = isum[1] = 0;
-      for(int m = 0; m < shortCount-1; m++)
-         if(((~GG[0][i][m]) & (~GG[1][i][m]) & 0xFFFF)!=0){
-            isum[0] ++;
-            isum[1] += oneoneCount[(~GG[0][i][m]) & (~GG[1][i][m]) & 65535];
-            tArray.Push(m);
-         }
-      missingWordInOnePersonCount[i] = isum[0];
-      missingInOnePersonCount[i] = isum[1];
-      int m = shortCount-1;
-      if(((~GG[0][i][m]) & (~GG[1][i][m]) & Mask)!=0){
-         missingWordInOnePersonCount[i] ++;
-         missingInOnePersonCount[i] += oneoneCount[(~GG[0][i][m]) & (~GG[1][i][m]) & Mask];
-         tArray.Push(m);
-      }
-      if(missingWordInOnePersonCount[i]){
-         missingWordInOnePerson[i] = new unsigned  int [missingWordInOnePersonCount[i]];
-         for(int m = 0; m < tArray.Length(); m++)
-            missingWordInOnePerson[i][m] = tArray[m];
-      }else
-         missingWordInOnePerson[i] = NULL;
-      isum[0] = 0;
-      for(int m = 0; m < shortCount; m++)
-         isum[0] += oneoneCount[(~GG[0][i][m]) & GG[1][i][m]];
-      hetInOnePersonCount[i] = isum[0];
-   }
- */
-/*
-      for(int r = 0; r < 2; r++)
-         for(int c = 0; c < BLOCKSIZE; c++)
-            mmMin[r][c] = 0;
-      for(id1 = i; id1 < iMax; id1++)
-         missingCount[0][id1-i] = missingWordInOnePersonCount[id1];
-      for(id2 = j; id2 < jMax; id2++)
-         missingCount[1][id2-j] = missingWordInOnePersonCount[id2];
-*/
-
-/*
-            for(m1 = 0; m1 < missingWordInOnePersonCount[id1]; m1++){
-               m2 = missingWordInOnePerson[id1][m1];
-               het1Count -= oneoneCount[~(GG[0][id1][m2] | GG[0][id2][m2] | GG[1][id1][m2]) & GG[1][id2][m2]];
-               pqSum += pq[m2];
-               p2q2Sum += p2q2[m2];
-            }
-            for(m1 = 0; m1 < missingWordInOnePersonCount[id2]; m1++){
-               m2 = missingWordInOnePerson[id2][m1];
-               het1Count -= oneoneCount[~(GG[0][id1][m2] | GG[0][id2][m2] | GG[1][id2][m2]) & GG[1][id1][m2]];
-               pqSum += pq[m2];
-               p2q2Sum += p2q2[m2];
-            }
-            notMissingCount = markerCount - missingInOnePersonCount[id1] - missingInOnePersonCount[id2];
-            for(m1 = m2 = 0; m1 < missingWordInOnePersonCount[id1]; m1++){
-               m3 = missingWordInOnePerson[id1][m1];
-               for(; m2 < missingWordInOnePersonCount[id2] &&
-                  missingWordInOnePerson[id2][m2] < m3; m2++);
-               if( m2 == missingWordInOnePersonCount[id2] ) break;
-               if(m3 == missingWordInOnePerson[id2][m2])
-                  notMissingCount += oneoneCount[~(GG[0][id1][m3] | GG[1][id1][m3] | GG[0][id2][m3] | GG[1][id2][m3]) & 0xFFFF];
-               pqSum -= pq[m3];
-               p2q2Sum -= p2q2[m3];
-            }
-*/
-//   unsigned long long int Mask = (markerCount%64)?
-//      ((unsigned long long int)1 << (markerCount % 64))-1 : 0xFFFFFFFFFFFFFFFF;
-
-//#include "MathStats.h"
-//#include "MathSVD.h"
-//#include "QuickIndex.h"
-//#include "MathCholesky.h"
-
 

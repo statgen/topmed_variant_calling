@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
 // shortrelationship.cpp
-// (c) 2010-2018 Wei-Min Chen
+// (c) 2010-2019 Wei-Min Chen
 //
 // This file is distributed as part of the KING source code package
 // and may not be redistributed in any form, without prior written
@@ -12,7 +12,7 @@
 //
 // All computer programs have bugs. Use this file at your own risk.
 //
-// August 7, 2018
+// Feb 22, 2019
 
 #include <math.h>
 #include "analysis.h"
@@ -907,19 +907,19 @@ void Engine::IBDLength_trioMI(IntArray &trio, int order, Vector &lengths)
    int *chrpos = new int[shortCount];
    bool *shortseg = new bool[shortCount];
    bool *shortgap = new bool[shortCount];
-   for(int m = 0; m < positions.Length(); m+=16){
+   for(int m = 0; m < bp.Length(); m+=16){
       if(chromosomes[m]>0 && chromosomes[m] < SEXCHR)
          chrpos[m/16] = chromosomes[m];
       else
          chrpos[m/16] = -1;
-      startpos[m/16] = (chromosomes[m]-1)*1000 + positions[m];
+      startpos[m/16] = (chromosomes[m]-1)*1000 + bp[m]*0.000001;
    }
-   for(int m = 15; m < positions.Length(); m+=16){
+   for(int m = 15; m < bp.Length(); m+=16){
       if(chrpos[m/16] != chromosomes[m])
          chrpos[m/16] = -1;
-      stoppos[m/16] = (chromosomes[m]-1)*1000 + positions[m];
+      stoppos[m/16] = (chromosomes[m]-1)*1000 + bp[m]*0.000001;
    }
-   stoppos[(positions.Length()-1)/16] = (chromosomes[positions.Length()-1]-1)*1000 + positions[positions.Length()-1];
+   stoppos[(bp.Length()-1)/16] = (chromosomes[bp.Length()-1]-1)*1000 + bp[bp.Length()-1]*0.000001;
    for(int m = 0; m < shortCount; m++){
       shortseg[m] = true;
       if(chrpos[m]==-1) shortseg[m] = false;
@@ -1014,19 +1014,19 @@ void Engine::IBDLength_3Pairs(IntArray &trio, int order, Vector &lengths)
    int *chrpos = new int[shortCount];
    bool *shortseg = new bool[shortCount];
    bool *shortgap = new bool[shortCount];
-   for(int m = 0; m < positions.Length(); m+=16){
+   for(int m = 0; m < bp.Length(); m+=16){
       if(chromosomes[m]>0 && chromosomes[m] < SEXCHR)
          chrpos[m/16] = chromosomes[m];
       else
          chrpos[m/16] = -1;
-      startpos[m/16] = (chromosomes[m]-1)*1000 + positions[m];
+      startpos[m/16] = (chromosomes[m]-1)*1000 + bp[m]*0.000001;
    }
-   for(int m = 15; m < positions.Length(); m+=16){
+   for(int m = 15; m < bp.Length(); m+=16){
       if(chrpos[m/16] != chromosomes[m])
          chrpos[m/16] = -1;
-      stoppos[m/16] = (chromosomes[m]-1)*1000 + positions[m];
+      stoppos[m/16] = (chromosomes[m]-1)*1000 + bp[m]*0.000001;
    }
-   stoppos[(positions.Length()-1)/16] = (chromosomes[positions.Length()-1]-1)*1000 + positions[positions.Length()-1];
+   stoppos[(bp.Length()-1)/16] = (chromosomes[bp.Length()-1]-1)*1000 + bp[bp.Length()-1];
    for(int m = 0; m < shortCount; m++){
       shortseg[m] = true;
       if(chrpos[m]==-1) shortseg[m] = false;
@@ -2221,13 +2221,13 @@ void Engine::WriteMerlin()
    else
       for(int i = 0; i < snpName.Length(); i++)
          fprintf(fp, "M %s\n", (const char*)snpName[i]);
-   if(xpositions.Length())
+   if(xbp.Length())
       for(int i = 0; i < xsnpName.Length(); i++)
          fprintf(fp, "M %s\n", (const char*)xsnpName[i]);
-   if(ypositions.Length())
+   if(ybp.Length())
       for(int i = 0; i < ysnpName.Length(); i++)
          fprintf(fp, "M %s\n", (const char*)ysnpName[i]);
-   if(mtpositions.Length())
+   if(mtbp.Length())
       for(int i = 0; i < mtsnpName.Length(); i++)
          fprintf(fp, "M %s\n", (const char*)mtsnpName[i]);
    fclose(fp);
@@ -2276,7 +2276,7 @@ void Engine::WriteMerlin()
                   (const char*)alleleLabel[0][m], (const char*)alleleLabel[1][m]);
                else fprintf(fp, " X X");
             }
-            if(xpositions.Length())
+            if(xbp.Length())
             for(int m = 0; m < xmarkerCount; m++){
                int byte = m/16;
                int offset = m%16;
@@ -2293,7 +2293,7 @@ void Engine::WriteMerlin()
                else fprintf(fp, " X X");
             }
 
-            if(ypositions.Length())
+            if(ybp.Length())
             for(int m = 0; m < ymarkerCount; m++){
                int byte = m/16;
                int offset = m%16;
@@ -2309,7 +2309,7 @@ void Engine::WriteMerlin()
                   (const char*)yalleleLabel[0][m], (const char*)yalleleLabel[1][m]);
                else fprintf(fp, " X X");
             }
-            if(mtpositions.Length())
+            if(mtbp.Length())
             for(int m = 0; m < mtmarkerCount; m++){
                int byte = m/16;
                int offset = m%16;
@@ -2328,13 +2328,13 @@ void Engine::WriteMerlin()
          }else{     // genotype unavailable
             for(int m = 0; m < markerCount; m++)
                fprintf(fp, " X X");
-            if(xpositions.Length())
+            if(xbp.Length())
                for(int m = 0; m < xmarkerCount; m++)
                   fprintf(fp, " X X");
-            if(ypositions.Length())
+            if(ybp.Length())
                for(int m = 0; m < ymarkerCount; m++)
                   fprintf(fp, " X X");
-            if(mtpositions.Length())
+            if(mtbp.Length())
                for(int m = 0; m < mtmarkerCount; m++)
                   fprintf(fp, " X X");
          }
@@ -2343,25 +2343,25 @@ void Engine::WriteMerlin()
    }
    fclose(fp);
 
-   if(positions.Length() || xpositions.Length() || ypositions.Length() || mtpositions.Length()){
+   if(bp.Length() || xbp.Length() || ybp.Length() || mtbp.Length()){
       fp = fopen(mapfile, "wt");
       if(fp == NULL)
          error("Cannot open %s to write.", (const char*)mapfile);
          for(int m = 0; m < markerCount; m++)
             fprintf(fp, "%d\t%s\t%.6lf\n",
-               chromosomes[m], (const char*)snpName[m], positions[m]);
-      if(xpositions.Length())
+               chromosomes[m], (const char*)snpName[m], bp[m]*0.000001);
+      if(xbp.Length())
          for(int m = 0; m < xmarkerCount; m++)
             fprintf(fp, "%d\t%s\t%.6lf\n",
-               SEXCHR, (const char*)xsnpName[m], xpositions[m]);
-      if(ypositions.Length())
+               SEXCHR, (const char*)xsnpName[m], xbp[m]*0.000001);
+      if(ybp.Length())
          for(int m = 0; m < ymarkerCount; m++)
             fprintf(fp, "%d\t%s\t%.6lf\n",
-               SEXCHR+1, (const char*)ysnpName[m], ypositions[m]);
-      if(mtpositions.Length())
+               SEXCHR+1, (const char*)ysnpName[m], ybp[m]*0.000001);
+      if(mtbp.Length())
          for(int m = 0; m < mtmarkerCount; m++)
             fprintf(fp, "%d\t%s\t%.6lf\n",
-               SEXCHR+3, (const char*)mtsnpName[m], mtpositions[m]);
+               SEXCHR+3, (const char*)mtsnpName[m], mtbp[m]*0.000001);
       fclose(fp);
       printf("Genotype data saved as MERLIN format in files %s, %s and %s\n",
          (const char*)datfile, (const char*)pedfile, (const char*)mapfile);

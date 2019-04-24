@@ -1,6 +1,19 @@
+//////////////////////////////////////////////////////////////////////
 // GRAMMAR.cpp
-// 10/24/2017 Wei-Min Chen
-
+// (c) 2010-2019 Wei-Min Chen
+//
+// This file is distributed as part of the KING source code package
+// and may not be redistributed in any form, without prior written
+// permission from the author. Permission is granted for you to
+// modify this file for your own personal use, but modified versions
+// must retain this copyright notice and must not be distributed.
+//
+// Permission is granted for you to use this file to compile KING.
+//
+// All computer programs have bugs. Use this file at your own risk.
+//
+// Feb 22, 2019
+
 #include "analysis.h"
 #include <math.h>
 #include "MathStats.h"
@@ -192,7 +205,7 @@ void Engine::GRAMMAR()
    if(N_Trait > 1)
       fprintf(fp, "\tTraitName");
    if(chromosomes.Length()) fprintf(fp, "\tChr");
-   if(positions.Length()) fprintf(fp, "\tPos");
+   if(bp.Length()) fprintf(fp, "\tPos");
    fprintf(fp, "\tLabelA\tLabela\tFreqA\tN\tBeta\tSE\tChisq\tH2\tPvalue\n");
 
    int k, mm;
@@ -256,8 +269,8 @@ void Engine::GRAMMAR()
                fprintf(fp, "\t%s", (const char*)ped.traitNames[traits[t]]);
             if(chromosomes.Length())
                fprintf(fp, "\t%d", chromosomes[pos]);
-            if(positions.Length())
-               fprintf(fp, "\t%.6lf", positions[pos]);
+            if(bp.Length())
+               fprintf(fp, "\t%.6lf", bp[pos]*0.000001);
             fprintf(fp, "\t%s\t%s\t%.3lf\t%d",
                (const char*)alleleLabel[0][pos], (const char*)alleleLabel[1][pos],
                freq[m], N_ID-missingCount[m]);

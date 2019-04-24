@@ -1,0 +1,27 @@
+[submodule "apigenome"]
+	path = apigenome
+	url = https://github.com/hyunminkang/apigenome
+[submodule "bamUtil"]
+	path = bamUtil
+	url = https://github.com/statgen/bamUtil
+[submodule "libStatGen"]
+	path = libStatGen
+	url = https://github.com/statgen/libStatGen
+[submodule "invNorm"]
+	path = invNorm
+	url = https://github.com/hyunminkang/invNorm
+[submodule "cramore"]
+	path = cramore
+	url = https://github.com/hyunminkang/cramore
+[submodule "htslib"]
+	path = htslib
+	url = https://github.com/samtools/htslib
+[submodule "bcftools"]
+	path = bcftools
+	url = https://github.com/samtools/bcftools
+[submodule "samtools"]
+	path = samtools
+	url = https://github.com/samtools/samtools
+[submodule "libsvm"]
+	path = libsvm
+	url = https://github.com/cjlin1/libsvm

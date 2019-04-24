@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
 // ibdmapping.cpp
-// (c) 2010-2018 Wei-Min Chen
+// (c) 2010-2019 Wei-Min Chen
 //
 // This file is distributed as part of the KING source code package
 // and may not be redistributed in any form, without prior written
@@ -12,7 +12,7 @@
 //
 // All computer programs have bugs. Use this file at your own risk.
 //
-// August 22, 2018
+// Feb 22, 2019
 
 #include <math.h>
 #include <time.h>
@@ -20,6 +20,7 @@
 #include "Random.h"
 #include "MathCholesky.h"
 #include "MathStats.h"
+#include "MathSVD.h"
 #include "QuickIndex.h"
 #ifdef _OPENMP
   #include <omp.h>
@@ -27,6 +28,801 @@
 #ifdef __ZLIB_AVAILABLE__
   #include <zlib.h>
 #endif
+
+#ifdef WITH_LAPACK
+extern "C" void dgesdd_(char*, int*, int*, double*, int*, double*, double *, int*, double*, int*, double*, int*, int*, int*);
+extern "C" void dgesvd_(char*, char*, int*, int*, double*, int*, double*, double*, int*, double*, int*, double*, int*, int*);
+#endif
+
+void Engine::IBDMDS_Projection()
+{
+   printf("\nOptions in effect:\n");
+   printf("\t--ibdmds\n");
+   printf("\t--projection\n");
+   if(mincons)
+      printf("\t--mincons %d\n", mincons);
+   if(Bit64Flag)
+      printf("\t--sysbit 64\n");
+   if(CoreCount)
+      printf("\t--cpus %d\n", CoreCount);
+   if(lessmemFlag)
+      printf("\t--lessmem\n");
+   if(prefix!="king")
+      printf("\t--prefix %s\n", (const char*)prefix);
+   printf("\n");                                                                   
+   bool IBDvalidFlag = PreSegment();
+   if(!IBDvalidFlag){
+      printf("%s\n", (const char*)segmessage);
+      printf("  Note chromosomal positions can be sorted conveniently using other tools such as PLINK.\n");
+      return;
+   }
+   printf("IBD-segment-based MDS Projection analysis starts at %s", currentTime());
+   IntArray subset[2];
+   for(int i = 0; i < 2; i++) subset[i].Dimension(0);
+   for(int i = 0; i < ped.count; i++)
+      if(ped[i].ngeno >= MINSNPCOUNT){
+         if(ped[i].affections[0]!=2)
+            subset[0].Push(geno[i]);
+         else subset[1].Push(geno[i]);
+      }
+   int dimN = subset[0].Length();
+   if(dimN < 2) {
+      printf("The number of unaffected individuals is < 2.\n");
+      return;
+   }
+   int dimN2 = subset[1].Length();
+   printf("MDS on a subset of %d reference samples...\n", dimN);
+   Vector EigenValue;
+   Matrix EigenVector;
+   IBDMDS_Internal(subset[0], EigenValue, EigenVector);
+   printf("Each of %d samples is now projected to reference PCs...\n", dimN2);
+   int dimPC = EigenValue.Length();
+   IntArray allpairs(0);
+   for(int i = 0; i < dimN2; i++)
+      for(int j = 0; j < dimN; j++){
+         allpairs.Push(subset[1][i]);
+         allpairs.Push(subset[0][j]);
+      }
+   int allpairCount = allpairs.Length()/2;
+   Vector pi(allpairCount);
+   pi.Zero();
+   IntArray ibdsegStorage[2], ibdsegIndex[2];
+   int segCount = (chrSeg.Length()>>2);
+   for(int seg = 0; seg < segCount; seg++){
+      if(mincons)
+         IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], true, 2500000, mincons);
+      else
+         IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], true);
+      #pragma omp parallel for num_threads(defaultMaxCoreCount)
+      for(int pair = 0; pair < allpairCount; pair++)
+         pi[pair] += (ibdsegStorage[0][pair]*0.5 + ibdsegStorage[1][pair])*0.000001;
+   }  // end of seg loop
+   for(int pair = 0; pair < allpairCount; pair++)
+      pi[pair] /= totalLength;
+   String pedfile = prefix;
+   pedfile.Add("pc.txt");
+   FILE *fp = fopen(pedfile, "wt");
+   if(fp == NULL) error("Cannot open %s to write.", (const char*)pedfile);
+   fprintf(fp, "FID IID FA MO SEX AFF");
+   for(int j = 0; j < dimPC; j++)
+      fprintf(fp, " PC%d", j+1);
+   fprintf(fp, "\n");
+   for(int i = 0; i < dimN; i++){
+      int id = phenoid[subset[0][i]];
+      fprintf(fp, "%s %s %s %s %d 1",
+         (const char*)ped[id].famid, (const char*)ped[id].pid,
+         (const char*)ped[id].fatid, (const char*)ped[id].motid,
+         ped[id].sex);
+      for(int j = 0; j < dimPC; j++)
+         fprintf(fp, " %.4lf", EigenVector[i][j]);
+      fprintf(fp, "\n");
+   }
+   for(int i = 0; i < dimN; i++)
+      for(int j = 0; j < dimPC; j++)
+         EigenVector[i][j] /= EigenValue[j];
+   double PC[20];
+   for(int i = 0; i < dimN2; i++){
+      for(int k = 0; k < dimPC; k++)
+         PC[k] = 0;
+      for(int j = 0; j < dimN; j++){
+         double p = pi[i*dimN+j];
+         for(int k = 0; k < dimPC; k++)
+            PC[k] += p * EigenVector[j][k];
+      }
+      int id = phenoid[subset[1][i]];
+      fprintf(fp, "%s %s %s %s %d 2",
+         (const char*)ped[id].famid, (const char*)ped[id].pid,
+         (const char*)ped[id].fatid, (const char*)ped[id].motid,
+         ped[id].sex);
+      for(int k = 0; k < dimPC; k++)
+         fprintf(fp, " %.4lf", PC[k]);
+      fprintf(fp, "\n");
+   }
+   fclose(fp);
+   printf("%d principal components saved in file %s\n", dimPC, (const char*)pedfile);
+   printf("IBD-based MDS ends at %s", currentTime());
+}
+
+void Engine::IBDMDS_Internal(IntArray & subset, Vector & EigenValue, Matrix & EigenVector)
+{
+   int subsetCount = subset.Length();
+   if(subsetCount > 0x7FFF) error("Internal ibdmds cannot handle %d samples at the moment", subsetCount);
+   IntArray allpairs(0), index(0);
+   const int BLOCKSIZE = 4;
+   for(int s = 0; s < subsetCount; s += BLOCKSIZE)
+      for(int s2 = s; s2 < s+BLOCKSIZE && s2 < subsetCount; s2++)
+         for(int t = s; t < subsetCount; t += BLOCKSIZE)
+            for(int t2 = t; t2 < t+BLOCKSIZE && t2 < subsetCount; t2++){
+               if(t==s && t2 <= s2) continue;
+               allpairs.Push(subset[s2]);
+               allpairs.Push(subset[t2]);
+               index.Push(s2);
+               index.Push(t2);
+            }
+   int allpairCount = allpairs.Length()/2;
+   Matrix D(subsetCount, subsetCount);
+   D.Zero();
+   IntArray ibdsegStorage[2], ibdsegIndex[2];
+   int segCount = (chrSeg.Length()>>2);
+   for(int seg = 0; seg < segCount; seg++){
+      if(mincons)
+         IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], true, 2500000, mincons);
+      else
+         IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], true);
+      #pragma omp parallel for num_threads(defaultMaxCoreCount)
+      for(int pair = 0; pair < allpairCount; pair++)
+         D[index[pair*2]][index[pair*2+1]] += (ibdsegStorage[0][pair]*0.5 + ibdsegStorage[1][pair])*0.000001;
+   }  // end of seg loop
+   for(int i = 0; i < subsetCount; i++)
+      for(int j = i+1; j < subsetCount; j++)
+         D[j][i] = D[i][j] = D[i][j] / totalLength;
+   for(int i = 0; i < subsetCount; i++)
+      D[i][i] = 1.0;
+   int dimN = subsetCount;
+   int dimPC = dimN>20?20:dimN;
+   EigenValue.Dimension(dimPC);
+   EigenVector.Dimension(dimN, dimPC);
+#ifdef WITH_LAPACK
+   char JOBZ = 'A';
+   int info;
+   double *A = new double[dimN*dimN];
+   int dimLA = dimN;
+   for(int i = 0; i < dimN; i++)
+     for(int j = 0; j < dimN; j++)
+       A[i*dimN+j] = D[j][i];
+   double *S = new double[dimN];
+   double *U = new double[dimN*dimN];
+   double *VT = new double[dimN*dimN];
+   int *IWORK = new int[dimN*8];
+   int LWORK = 8*dimN + 4*dimN*dimN;
+   double *WORK = new double[LWORK];
+   dgesdd_(&JOBZ, &dimLA, &dimLA, A, &dimLA, S, U, &dimLA, VT, &dimLA, WORK, &LWORK, IWORK, &info);
+   delete []U;
+   delete []IWORK;
+   delete []WORK;
+   delete []A;
+   for(int i = 0; i < dimPC; i++)
+      EigenValue[i] = S[i];
+   for(int i = 0; i < dimN; i++)
+      for(int j = 0; j < dimPC; j++)
+         EigenVector[i][j] = VT[i*dimN+j];
+   delete []S;
+   delete []VT;
+#else
+   SVD svd;
+   svd.Decompose(D);
+   if(svd.n == 0) return;
+   QuickIndex idx;
+   idx.Index(svd.w);
+   for(int i = 0; i < dimPC; i++)
+      EigenValue[i] = svd.w[idx[dimN-1-i]];
+   for(int i = 0; i < dimN; i++)
+      for(int j = 0; j < dimPC; j++)
+         EigenVector[i][j] = svd.v[i][idx[dimN-1-j]];
+#endif
+}
+
+
+
+   /*
+   Vector tempV(dimN);
+   tempV.Zero();
+   for(int j = 0; j < dimN; j++)
+      for(int i = 0; i < dimN; i++)
+         tempV[j] += D[i][j];
+   tempV.Multiply(1.0/dimN);
+   // (I-11'/N) * D
+   for(int i = 0; i < dimN; i++)
+      for(int j = 0; j < dimN; j++)
+         D[i][j] -= tempV[j];
+   tempV.Zero();
+   for(int i = 0; i < dimN; i++)
+      for(int j = 0; j < dimN; j++)
+         tempV[i] += D[i][j];
+   tempV.Multiply(1.0/dimN);
+   // D * (I-11'/N)
+   for(int i = 0; i < dimN; i++)
+      for(int j = 0; j < dimN; j++)
+         D[i][j] -= tempV[i];
+     */
+
+void Engine::HEreg()
+{
+   printf("\nOptions in effect:\n");
+   printf("\t--HEreg\n");
+   if(Bit64Flag)
+      printf("\t--sysbit 64\n");
+   if(CoreCount)
+      printf("\t--cpus %d\n", CoreCount);
+   if(lessmemFlag)
+      printf("\t--lessmem\n");
+   if(prefix!="king")
+      printf("\t--prefix %s\n", (const char*)prefix);
+   printf("\n");
+   printf("Haseman-Elston regression scan starts at %s", currentTime());
+   bool IBDvalidFlag = PreSegment();
+   if(!IBDvalidFlag){
+      printf("%s\n", (const char*)segmessage);
+      printf("  Note chromosomal positions can be sorted conveniently using other tools such as PLINK.\n");
+      return;
+   }
+   IntArray allpairs(0);
+   for(int f = 0; f < ped.familyCount; f++)
+      for(int i = ped.families[f]->first; i <= ped.families[f]->last; i++)
+         if(ped[i].sibCount > 1 && ped[i].sibs[0]->serial == i)
+            for(int s = 0; s < ped[i].sibCount; s++)
+               for(int t = s+1; t < ped[i].sibCount; t++){
+                  allpairs.Push(geno[ped[i].sibs[s]->serial]);
+                  allpairs.Push(geno[ped[i].sibs[t]->serial]);
+               }
+   int pairCount = allpairs.Length()>>1;
+   if(pairCount == 0) {printf("No sib pairs are found.\n"); return;}
+   printf("%d sib pairs are used for Haseman-Elston regression.\n", pairCount);
+   int traitCount = traits.Length();
+   Matrix allY(pairCount, traitCount);
+   allY.Set(_NAN_);
+   Vector meanYs(traitCount);
+   meanYs.Zero();
+   Vector meanY2s(traitCount);
+   meanY2s.Zero();
+   IntArray yCount(traitCount);
+   yCount.Zero();
+   IntArray *sibs = new IntArray[traitCount];
+   for(int t = 0; t < traitCount; t++)
+      sibs[t].Dimension(0);
+   for(int p = 0; p < pairCount; p++){
+      int p1 = phenoid[allpairs[p*2]];
+      int p2 = phenoid[allpairs[p*2+1]];
+      for(int t = 0; t < traitCount; t++){
+         double y1 = ped[p1].traits[traits[t]];
+         double y2 = ped[p2].traits[traits[t]];
+         if(y1 != _NAN_ && y2 != _NAN_){
+            sibs[t].Push(p1);
+            sibs[t].Push(p2);
+            double temp = y1 - y2;
+            temp = temp*temp;
+            allY[p][t] = temp;
+            meanYs[t] += temp;
+            meanY2s[t] += temp*temp;
+            yCount[t]++;
+         }
+      }
+   }
+   for(int t = 0; t < traitCount; t++)
+      if(yCount[t] >= 5){
+         meanYs[t] /= yCount[t];
+         meanY2s[t] /= yCount[t];
+      }
+   Vector vars(traitCount);
+   IntArray Ns(traitCount);
+   Vector H2(traitCount);
+   Vector Vg(traitCount);
+#ifdef _OPENMP
+   #pragma omp parallel for num_threads(defaultMaxCoreCount)
+#endif
+   for(int t = 0; t < traitCount; t++){
+      sibs[t].Sort();
+      double sum = ped[sibs[t][0]].traits[traits[t]];
+      double sqsum = sum * sum;
+      Ns[t] = 1;
+      int sibsCount = sibs[t].Length();
+      for(int i = 1; i < sibsCount; i++){
+         if(sibs[t][i] != sibs[t][i-1]){
+            double temp = ped[sibs[t][i]].traits[traits[t]];
+            sum += temp;
+            sqsum += temp*temp;
+            Ns[t]++;
+         }
+      }
+      vars[t] = (sqsum - sum*sum/Ns[t])/(Ns[t]-1);
+      Vg[t] = vars[t]*2 - meanYs[t];
+      H2[t] = Vg[t] > 0? Vg[t] / vars[t]: 0;
+      if(H2[t] > 1) H2[t] = 1;
+   }
+   printf("Heritability estimates using phenotypes of sibpairs only:\n");
+   printf("%15s %7s %7s %10s %10s %10s\n", "Trait", "N_pairs", "N", "Var", "Var_g", "H2");
+   for(int t = 0; t < traitCount; t++)
+      printf("%15s %7d %7d %10.2lf %10.2lf %10.3lf\n",
+         (const char*)ped.traitNames[traits[t]],
+         yCount[t], Ns[t], vars[t], Vg[t], H2[t]);
+   printf("\n");
+
+   IntArray invalid(traitCount);
+   invalid.Zero();
+   for(int t = 0; t < traitCount; t++){
+      if(yCount[t] < 5){
+         printf("Trait %s is skipped for having less than 5 pairs of sibpairs.\n",
+            (const char*)ped.traitNames[traits[t]]);
+         invalid[t] = 1;
+      }else if(meanYs[t] < 1E-10){
+         printf("Trait %s is skipped for no variation within any sibpair.\n",
+            (const char*)ped.traitNames[traits[t]]);
+         invalid[t] = 1;
+      }else if(vars[t] < 1E-10){
+         printf("Trait %s is skipped for no variation across individuals.\n",
+            (const char*)ped.traitNames[traits[t]]);
+         invalid[t] = 1;
+      }
+   }
+   IntArray *NbyIBD[2];
+   Vector *meanYbyIBD[2];
+   for(int k = 0; k < 2; k++){
+      NbyIBD[k] = new IntArray[traitCount];
+      meanYbyIBD[k] = new Vector[traitCount];
+   }
+   char header[256];
+   char **buffer = new char *[traitCount];
+   for(int t = 0; t < traitCount; t++){
+      buffer[t] = new char[256];
+      buffer[t][0]='\0';
+   }
+   String buffers;
+   sprintf(header, "Chr\tPos\tFlankSNP1\tFlankSNP2\tN_IBD0\tN_IBD1\tN_IBD2\tSqDiff0\tSqDiff1\tSqdiff2\th2\tAlpha\tNegBeta\tSE\tT\tPvalue\tLOD\n");
+   String *outfiles = new String[traitCount];
+   FILE **fps = new FILE *[traitCount];
+   for(int t = 0; t < traitCount; t++){
+      if(invalid[t]) continue;
+      outfiles[t] = prefix;
+      outfiles[t].Add('_');
+      outfiles[t].Add(ped.traitNames[traits[t]]);
+      outfiles[t].Add(".her");
+      fps[t] = fopen(outfiles[t], "wt");
+      fprintf(fps[t], "%s", header);
+   }
+   bool headerPrinted=false;
+   IntArray ibdsegStorage[2], ibdsegIndex[2];
+   const double LODfactor = 0.5 / log(10.0);
+   int segCount = (chrSeg.Length()>>2);
+   for(int seg = 0; seg < segCount; seg++){
+      int chrsegMin = chrSeg[seg<<2];
+      int chrsegMax = chrSeg[(seg<<2)|1];
+      int ndim = chrsegMax - chrsegMin + 1;
+      IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0],
+         ibdsegStorage[1], ibdsegIndex[1], false, 2500000, 10000);
+      for(int k = 0; k < 2; k++){
+         for(int t = 0; t < traitCount; t++){
+            NbyIBD[k][t].Dimension(ndim);
+            NbyIBD[k][t].Zero();
+            meanYbyIBD[k][t].Dimension(ndim);
+            meanYbyIBD[k][t].Zero();
+         }
+         int tempcount = ibdsegIndex[k].Length();
+         for(int i = 0; i < tempcount; i++){
+            int pair = ibdsegIndex[k][i];
+            int startword = ((ibdsegStorage[k][i*2]-1)>>6)+1;
+            int stopword = ((ibdsegStorage[k][i*2+1]+1)>>6)-1;
+            int localcount = stopword-chrsegMin;
+            int startw = startword-chrsegMin;
+            if(startword-chrsegMin-1 >= 0 && ibdsegStorage[k][i*2] <= (startword<<6)-33)
+               startw = startword-chrsegMin-1;
+            int stopw = localcount;
+            if(localcount+1 < ndim && (ibdsegStorage[k][i*2+1]&0x3F) >= 32)
+               stopw = localcount + 1;
+#ifdef _OPENMP
+   #pragma omp parallel for num_threads(defaultMaxCoreCount)
+#endif
+            for(int t = 0; t < traitCount; t++){
+               double y = allY[pair][t];
+               if(y != _NAN_)
+                  for(int w = startw; w <= stopw; w++){
+                     NbyIBD[k][t][w] ++;
+                     meanYbyIBD[k][t][w] += y;
+                  }
+            }  // end of loop t for traits
+         }  // end of loop i for pairs
+      }  // end of loop k for IBD1 or IBD2
+      int chr = chromosomes[chrsegMin<<6];
+      buffers.Clear();
+#ifdef _OPENMP
+   #pragma omp parallel for num_threads(defaultMaxCoreCount)
+#endif
+      for(int t = 0; t < traitCount; t++){
+         if(invalid[t]) continue;
+         int N = yCount[t];
+         double meanY = meanYs[t];
+         double meanY2 = meanY2s[t];
+         double var = vars[t];
+         double maxLOD = 3.6;
+         buffer[t][0]='\0';
+         String traitName = ped.traitNames[t];
+         for(int w = 0; w <= chrsegMax - chrsegMin; w++){
+            double meanX = (NbyIBD[0][t][w] * 0.5 + NbyIBD[1][t][w]) / N;
+            double lxx = NbyIBD[0][t][w] * 0.25 + NbyIBD[1][t][w] - meanX * meanX * N;
+            double lxy = meanYbyIBD[0][t][w] * 0.5 + meanYbyIBD[1][t][w] - meanX * meanY * N;
+            meanX -= 0.5;
+            for(int k = 0; k < 2; k++) meanYbyIBD[k][t][w] /= NbyIBD[k][t][w];
+            double beta = lxy / lxx;
+            double alpha = meanY - meanX * beta;
+            double h2 = -beta*0.5 / var;
+            if(h2>1) h2 = 1;
+            double Q = (meanY2 + alpha*alpha - 2*alpha*meanY + 2*alpha*beta*meanX) * N
+               + beta * beta * (lxx+meanX*meanX*N) - 2*beta*(lxy+meanX*meanY*N);// Q = Sum(Y - a - b X)^2
+            double se = sqrt(Q / (N-1) / lxx);
+            double Tstat = beta / se;
+            double pvalue = beta < 0? tdist(fabs(Tstat), N-1)*0.5: 1;
+            double LOD = Tstat * Tstat * LODfactor;
+            if(beta > 0) LOD = -LOD;
+            int N0 = N - NbyIBD[0][t][w] - NbyIBD[1][t][w];
+            int base = ((w+chrsegMin)<<6);
+            fprintf(fps[t], "%d\t%.3lf\t%s\t%s\t%d\t%d\t%d\t%.2lf\t%.2lf\t%.2lf\t%.3lf\t%.2lf\t%.2lf\t%.3lf\t%.3lf\t%.2G\t%.2lf\n",
+               chr, (bp[base+31]+bp[base+32])*0.0000005,
+               (const char*)snpName[base+31], (const char*)snpName[base+32],
+               N0, NbyIBD[0][t][w], NbyIBD[1][t][w],
+               (meanY*N - meanYbyIBD[0][t][w] * NbyIBD[0][t][w] - meanYbyIBD[1][t][w] * NbyIBD[1][t][w]) / N0,
+               meanYbyIBD[0][t][w],
+               meanYbyIBD[1][t][w],
+               h2, alpha, -beta, se, Tstat, pvalue, LOD);
+            if(LOD > maxLOD){
+               maxLOD = LOD;
+               sprintf(buffer[t], "%s\t%d\t%.3lf\t%s\t%s\t%d\t%d\t%d\t%.2lf\t%.2lf\t%.2lf\t%.3lf\t%.2lf\t%.2lf\t%.3lf\t%.3lf\t%.2G\t%.2lf\n",
+               (const char*)traitName, chr, (bp[base+31]+bp[base+32])*0.0000005,
+               (const char*)snpName[base+31], (const char*)snpName[base+32],
+               N0, NbyIBD[0][t][w], NbyIBD[1][t][w],
+               (meanY*N - meanYbyIBD[0][t][w] * NbyIBD[0][t][w] - meanYbyIBD[1][t][w] * NbyIBD[1][t][w]) / N0,
+               meanYbyIBD[0][t][w],
+               meanYbyIBD[1][t][w],
+               h2, alpha, -beta, se, Tstat, pvalue, LOD);
+            }
+         }  // end of position
+      }  // end of trait
+      for(int t = 0; t < traitCount; t++)
+         if(buffer[t][0]){
+            if(!headerPrinted){
+               printf("The following linkage regions reach genome-wide significance:\n");
+               printf("Trait\t%s", header);
+               headerPrinted = true;
+            }
+            printf("%s", buffer[t]);
+         }
+   }  // end of seg
+   for(int k = 0; k < 2; k++){
+      delete []NbyIBD[k];
+      delete []meanYbyIBD[k];
+   }
+   for(int t = 0; t < traitCount; t++)
+      delete []buffer[t];
+   delete []buffer;
+   printf("\nHaseman-Elston regression results saved in files:\n");
+   for(int t = 0; t < traitCount; t++){
+      if(invalid[t]) continue;
+      fclose(fps[t]);
+      printf("%s\t", (const char*)outfiles[t]);
+   }
+   String outfile(prefix);
+   outfile.Add(".her");
+   printf("\nHaseman-Elston regression results are also available in a single file %s.\n", (const char*)outfile);
+   FILE *fp = fopen((const char*)outfile, "wt");
+   fprintf(fp, "Trait\t%s", header);
+   String line;
+   for(int t = 0; t < traitCount; t++){
+      if(invalid[t]) continue;
+      FILE *input=fopen((const char*)outfiles[t], "rt");
+      if(input==NULL) continue;
+      line.ReadLine(input);
+      while(!feof(input)){
+         line.ReadLine(input);
+         if(line.Length()>1)
+            fprintf(fp, "%s\t%s\n", (const char*)ped.traitNames[traits[t]], (const char*)line);
+      }
+      fclose(input);
+   }
+   fclose(fp);
+   delete []outfiles;
+   delete []fps;
+   printf("Haseman-Elston regression scan ends at %s\n", currentTime());
+}
+
+void Engine::IBDVC()
+{
+   printf("\nOptions in effect:\n");
+   printf("\t--ibdvc\n");
+   if(normalization)
+      printf("\t--invnorm\n");
+   if(mincons)
+      printf("\t--mincons %d\n", mincons);
+   if(Bit64Flag)
+      printf("\t--sysbit 64\n");
+   if(CoreCount)
+      printf("\t--cpus %d\n", CoreCount);
+   if(lessmemFlag)
+      printf("\t--lessmem\n");
+   if(prefix!="king")
+      printf("\t--prefix %s\n", (const char*)prefix);
+   printf("\n");
+
+   Cholesky chol;
+   QuickIndex idx;
+   bool IBDvalidFlag = PreSegment();
+   if(!IBDvalidFlag){
+      printf("%s\n", (const char*)segmessage);
+      printf("  Note chromosomal positions can be sorted conveniently using other tools such as PLINK.\n");
+      return;
+   }
+   IntArray allpairs(0);
+   for(int i = 0; i < idCount; i++)
+      for(int j = i+1; j < idCount; j++){
+         allpairs.Push(i);
+         allpairs.Push(j);
+      }
+   int allpairCount = allpairs.Length()/2;
+   Matrix pi(idCount, idCount);
+   pi.Zero();
+   IntArray ibdsegStorage[2], ibdsegIndex[2];
+   int segCount = (chrSeg.Length()>>2);
+   for(int seg = 0; seg < segCount; seg++){
+      if(mincons)
+         IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], true, 2500000, mincons);
+      else
+         IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], true);
+      for(int p = 0; p < allpairCount; p++)
+         pi[allpairs[p*2]][allpairs[p*2+1]] += (ibdsegStorage[0][p]*0.5 + ibdsegStorage[1][p])*0.000001;
+   }  // end of seg loop
+   for(int i = 0; i < idCount; i++)
+      for(int j = i+1; j < idCount; j++)
+         pi[i][j] /= totalLength;
+   for(int i = 0; i < idCount; i++) pi[i][i] = 1.0;
+   printf("Similarity matrix consists of sample covariance estimates, standardized by diagonal elements\n");
+   int degree[3];
+   for(int d = 0; d < 3; d++)
+      degree[d] = 0;
+   for(int i = 0; i < idCount; i++)
+      for(int j = i+1; j < idCount; j++)
+         if(pi[i][j] > 0.8) // MZ twins
+            degree[0] ++;
+         else if(pi[i][j] > 0.354) // 1st-degree relatives
+            degree[1] ++;
+         else if(pi[i][j] > 0.177) // 2nd-degree relatives
+            degree[2] ++;
+   if(degree[0] || degree[1] || degree[2])
+      printf("Close relatives identified: %d MZ twins/duplicates, %d 1st-degree and %d 2nd-degree relative pairs\n",
+         degree[0], degree[1], degree[2]);
+   else
+      printf("No second-degree or closer relationships were found\n");
+
+   int N_Trait = traits.Length();
+   if(N_Trait == 0) error("Quantitative traits are not found for variance component analysis.");
+   int N_Covariate = covariates.Length();
+   lambda0.Dimension(N_Trait);
+   Vector loglik0(N_Trait);
+   loglik0.Set(1E10);
+   Vector score0(N_Covariate+1);
+   Matrix Info0(N_Covariate+1, N_Covariate+1);
+   tau0.Dimension(N_Trait);
+   Matrix InvX(N_Covariate+1, idCount);
+
+   printf("\nPolygenic parameter estimates\n");
+   printf("%-15s %7s %7s %7s %7s %7s %9s",
+         "TraitName", "N", "Herit", "LogLik", "Lambda", "Tau", "Mu");
+   for(int i= 0; i < N_Covariate; i++)
+      printf(" %9s", (const char*)ped.covariateNames[covariates[i]]);
+   printf("\n");
+   IntArray validFlag(idCount);
+   for(int t = 0; t < N_Trait; t++){
+      validFlag.Set(1);
+      for(int i = 0; i < idCount; i++){
+         int id = phenoid[i];
+         if(!ped[id].isPhenotyped(traits[t])) {
+            validFlag[i] = 0;
+            continue;
+         }
+         bool missing = false;
+         for(int j = 0; j < N_Covariate; j++)
+            if(ped[id].covariates[covariates[j]] == _NAN_)
+               missing = true;
+         if(missing)
+            validFlag[i] = 0;
+      }
+      ID.Dimension(0);
+      for(int i = 0; i < idCount; i++)
+         if(validFlag[i]) ID.Push(i);
+      int N_ID = ID.Length();
+      for(int i = 0; i < N_ID; i++)
+         for(int j = 0; j < i; j++)
+            pi[i][j] = pi[ID[j]][ID[i]];
+      Matrix X(N_ID, 1+N_Covariate);
+      Vector Y(N_ID);
+      for(int i = 0; i < N_ID; i++){
+         int id = phenoid[ID[i]];
+         Y[i] = ped[id].traits[traits[t]];
+         X[i][0] = 1.0;
+         for(int j = 0; j < N_Covariate; j++)
+            X[i][j+1] = ped[id].covariates[covariates[j]];
+      }
+      double meanY = 0.0;
+      int n=0;
+      for(int i = 0; i < N_ID; i++)
+         if(Y[i] != _NAN_) {
+            meanY += Y[i];
+            n ++;
+         }
+      meanY /= n;
+      for(int i = 0; i < N_ID; i++)
+         if(Y[i] == _NAN_)
+            Y[i] = meanY;
+      Vector tV(N_ID);
+      if(normalization){
+         for(int i = 0; i < N_ID; i++)
+            tV[i] = Y[i];
+         idx.Index(tV);
+         for(int i = 0; i < N_ID;){
+            int start = i, end = i + 1;
+            while(end < N_ID && tV[idx[end]] == tV[idx[start]]) end++;
+            end --;
+            double q = ninv((start + (end-start)/2.0 + 0.5)/N_ID);
+            for(int j = start; j <= end; j++)
+               Y[idx[j]] = q;
+            i = end + 1;
+         }
+      }
+#ifdef WITH_LAPACK
+      char JOBZ = 'A';
+      int info;
+      double *A = new double[N_ID*N_ID];
+      int dimLA = N_ID;
+      for(int i = 0; i < N_ID; i++)
+         for(int j = 0; j < i; j++)
+            A[i*N_ID+j] = pi[i][j];
+      for(int i = 0; i < N_ID; i++)
+         for(int j = i; j < N_ID; j++)
+            A[i*N_ID+j] = pi[j][i];
+      double *S = new double[N_ID];
+      double *U = new double[N_ID*N_ID];
+      double *VT = new double[N_ID*N_ID];
+      int *IWORK = new int[N_ID*8];
+      int LWORK = 8*N_ID + 4*N_ID*N_ID;
+      double *WORK = new double[LWORK];
+      dgesdd_(&JOBZ, &dimLA, &dimLA, A, &dimLA, S, U, &dimLA, VT, &dimLA, WORK, &LWORK, IWORK, &info);
+      delete []U;
+      delete []IWORK;
+      delete []WORK;
+      delete []A;
+      EV.Dimension(N_ID);
+      for(int i = 0; i < N_ID; i++) EV[i] = S[i];
+      delete []S;
+      // VT[k*N_ID+j] stores jth eigenvector. k: id; j: marker
+      UT = new double * [N_ID];
+      for(int i = 0; i < N_ID; i++)
+         UT[i] = new double [N_ID];
+      for(int j = 0; j < N_ID; j++)
+         for(int k = 0; k < N_ID; k++)
+            UT[j][k] = VT[k*N_ID+j];
+      delete []VT;
+#else
+      Matrix D(N_ID, N_ID);
+      for(int i = 0; i < N_ID; i++)
+         for(int j = i+1; j < N_ID; j++)
+            D[i][j] = D[j][i];
+      for(int i = 0; i < N_ID; i++)
+         D[i][i] = 1.0;
+      SVD svd;
+      svd.Decompose(D);
+      if(svd.n == 0) return;
+      EV.Dimension(N_ID);
+      for(int i = 0; i < N_ID; i++) EV[i] = svd.w[i];
+      // svd.v[k][idx[N_ID-1-j]] stores jth eigenvector
+      UT = new double * [N_ID];
+      for(int i = 0; i < N_ID; i++)
+         UT[i] = new double [N_ID];
+      for(int j = 0; j < N_ID; j++)
+         for(int k = 0; k < N_ID; k++)
+            UT[j][k] = svd.v[k][j];
+#endif
+      UY.Dimension(N_ID);     // U'Y += UT[i][k] * Y[k]
+      for(int i = 0; i < N_ID; i++){
+         double temp = 0.0;
+         for(int k = 0; k < N_ID; k++)
+            temp += UT[i][k] * Y[k];
+         UY[i] = temp;
+      }
+      for(int i = 0; i < N_ID; i++)
+         for(int j = 0; j < N_Covariate+1; j++)
+            InvX[j][i] = X[i][j];
+      UX.Dimension(N_ID, N_Covariate+1);
+      for(int i = 0; i < N_ID; i++)
+         for(int j = 0; j < N_Covariate+1; j++){
+            double temp = 0.0;
+            for(int k = 0; k < N_ID; k++)
+               temp += UT[i][k] * InvX[j][k];
+            UX[i][j] = temp;
+         }
+
+      double LB, T, temp;
+      int numiter;
+      int maxIter=10000;
+      bool quiet=true;
+      T = 0.001;
+      double R1R;
+      Vector beta(N_Covariate+2);
+      Vector beta0(N_Covariate+1);
+      double Resid0;
+      Vector Resid(N_ID);
+      double lambda;
+      double loglik;
+      const int TOTALCUT=200;
+      double funcx[TOTALCUT], x[TOTALCUT];
+      currentT = t;
+#pragma omp parallel for num_threads(defaultMaxCoreCount) private(numiter)
+      for(int i = 0; i < TOTALCUT; i++){
+         double a = exp(i*0.1 - 5);
+         double b = exp(i*0.1 - 4.9);
+         x[i] = minimize(a, b, T, funcx[i], numiter, maxIter, quiet);
+      }
+      lambda0.Zero();
+      for(int i = 0; i < TOTALCUT; i++){
+         if(funcx[i] < loglik0[currentT]) {
+            loglik0[currentT] = funcx[i];
+            lambda0[currentT] = 1/x[i];
+         }
+      }
+      if(lambda0[currentT]<0.0067){  // border
+         lambda0[currentT] = 0;
+      }
+      for(int i = 0; i < N_Covariate+1; i++)
+         for(int j = 0; j < N_Covariate+1; j++){
+            double temp = 0.0;
+            for(int k = 0; k < N_ID; k++)
+               temp += UX[k][i] * UX[k][j] / (lambda0[currentT] * EV[k] + 1);
+            Info0[i][j] = temp;
+         }
+      for(int i = 0; i < N_Covariate+1; i++){
+         double temp = 0.0;
+         for(int k = 0; k < N_ID; k++)
+            temp += UX[k][i] * UY[k] / (lambda0[currentT] * EV[k] + 1);
+         score0[i] = temp;
+      }
+      if(N_Covariate==0)
+         beta0[0] = score0[0]/Info0[0][0];
+      else if(chol.TryDecompose(Info0)==0)
+         beta0.Zero();
+      else{
+         chol.Decompose(Info0);
+         chol.BackSubst(score0);
+         beta0 = chol.x;
+      }
+      R1R = 0;
+      for(int i = 0; i < N_ID; i++){
+         Resid0 = UY[i];
+         for(int j = 0; j < N_Covariate+1; j++)
+            Resid0 -= UX[i][j] * beta0[j];
+         R1R += Resid0 * Resid0 / (lambda0[currentT] * EV[i]+1);
+      }
+      tau0[currentT] = N_ID / R1R;
+      printf("%-15s %7d %7.4lf %7.1lf %7.2lf %7.2lf",
+         (const char*)ped.traitNames[traits[t]], N_ID, lambda0[t]/(1+lambda0[t]),
+         -loglik0[t], lambda0[t], tau0[t]);
+      for(int i = 0; i < N_Covariate+1; i++)
+         printf(" %9.4lf", beta0[i]);
+      printf("\n");
+
+      for(int i = 0; i < N_ID; i++)
+         delete UT[i];
+      delete []UT;
+   }  // end of for loop t
+
+   // GWAS scan here to be implemented
+
+
+}
 
 void Engine::AllIBDSegments()
 {
@@ -66,7 +862,7 @@ void Engine::AllIBDSegments()
                allpairs.Push(t2);
             }
    int pairCount = allpairs.Length()>>1;
-   IntArray ibdsegCount, ibdsegStorage[2], ibdsegIndex[2];
+   IntArray ibdsegStorage[2], ibdsegIndex[2];
    int pbuffer0 = 0;
    const int coreCount = defaultMaxCoreCount;
    gzFile fps[coreCount];
@@ -87,7 +883,7 @@ void Engine::AllIBDSegments()
    int segCount = (chrSeg.Length()>>2);
    for(int seg = 0; seg < segCount; seg++){
       if(mincons)
-         IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], false, 2.5, mincons);
+         IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], false, 2500000, mincons);
       else
          IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1]);
 
@@ -105,9 +901,9 @@ void Engine::AllIBDSegments()
             (const char*)ped[phenoid[id1]].famid, (const char*)ped[phenoid[id1]].pid,
             (const char*)ped[phenoid[id2]].famid, (const char*)ped[phenoid[id2]].pid,
             "IBD2",
-            chromosomes[segstart], positions[segstart], positions[segstop],
+            chromosomes[segstart], bp[segstart]*0.000001, bp[segstop]*0.000001,
             (const char*)snpName[segstart], (const char*)snpName[segstop],
-            segstop-segstart+1, positions[segstop]-positions[segstart]);
+            segstop-segstart+1, (bp[segstop]-bp[segstart])*0.000001);
          if(pbuffer0 > 0xFEFF){  // buffer big enough for writing
             gzwrite(fps[0], buffer[0], pbuffer0);
             pbuffer0 = 0;
@@ -142,9 +938,9 @@ void Engine::AllIBDSegments()
             (const char*)ped[phenoid[id1]].famid, (const char*)ped[phenoid[id1]].pid,
             (const char*)ped[phenoid[id2]].famid, (const char*)ped[phenoid[id2]].pid,
             "IBD1",
-            chromosomes[segstart], positions[segstart], positions[segstop],
+            chromosomes[segstart], bp[segstart]*0.000001, bp[segstop]*0.000001,
             (const char*)snpName[segstart], (const char*)snpName[segstop],
-            segstop-segstart+1, positions[segstop]-positions[segstart]);
+            segstop-segstart+1, (bp[segstop]-bp[segstart])*0.000001);
          pbuffer[thread] += sprintf(&buffer[thread][pbuffer[thread]], "%s", tbuffer);
          if(pbuffer[thread] > 0xFEFF){  // buffer big enough for writing
             if(fps[thread] == NULL)
@@ -180,6 +976,201 @@ void Engine::AllIBDSegments()
    }  // end of seg
    printf("                        ends at %s", currentTime());
    printf("All IBD segments saved in a gzipped file %s\n", (const char*)outfile);
+#endif
+}
+
+void Engine::IBDMDS()
+{
+   if(idCount > 0x7FFF) error("--ibdmds cannot handle %d samples at the moment", idCount);
+   printf("\nOptions in effect:\n");
+   printf("\t--ibdmds\n");
+   if(mincons)
+      printf("\t--mincons %d\n", mincons);
+   if(Bit64Flag)
+      printf("\t--sysbit 64\n");
+   if(CoreCount)
+      printf("\t--cpus %d\n", CoreCount);
+   if(lessmemFlag)
+      printf("\t--lessmem\n");
+   if(prefix!="king")
+      printf("\t--prefix %s\n", (const char*)prefix);
+   printf("\n");
+
+   bool IBDvalidFlag = PreSegment();
+   if(!IBDvalidFlag){
+      printf("%s\n", (const char*)segmessage);
+      printf("  Note chromosomal positions can be sorted conveniently using other tools such as PLINK.\n");
+      return;
+   }
+   printf("IBD-segment-based MDS analysis starts at %s", currentTime());
+   IntArray allpairs(0);
+   const int BLOCKSIZE = 4;
+   for(int s = 0; s < idCount; s += BLOCKSIZE)
+      for(int s2 = s; s2 < s+BLOCKSIZE && s2 < idCount; s2++)
+         for(int t = s; t < idCount; t += BLOCKSIZE)
+            for(int t2 = t; t2 < t+BLOCKSIZE && t2 < idCount; t2++){
+               if(t==s && t2 <= s2) continue;
+               allpairs.Push(s2);
+               allpairs.Push(t2);
+            }
+   int allpairCount = allpairs.Length()/2;
+   Matrix D(idCount, idCount);
+   D.Zero();
+   IntArray ibdsegStorage[2], ibdsegIndex[2];
+   int segCount = (chrSeg.Length()>>2);
+   for(int seg = 0; seg < segCount; seg++){
+      if(mincons)
+         IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], true, 2500000, mincons);
+      else
+         IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], true);
+      #pragma omp parallel for num_threads(defaultMaxCoreCount)
+      for(int pair = 0; pair < allpairCount; pair++)
+         D[allpairs[pair*2]][allpairs[pair*2+1]] += (ibdsegStorage[0][pair]*0.5 + ibdsegStorage[1][pair])*0.000001;
+   }  // end of seg loop
+   for(int i = 0; i < idCount; i++)
+      for(int j = i+1; j < idCount; j++)
+         D[i][j] /= totalLength;
+   IntArray toberemoved(idCount);
+   toberemoved.Zero();
+   const double T=0.3535534;
+   for(int i = 0; i < idCount; i++)
+      for(int j = i+1; j < idCount; j++)
+         if(D[i][j] > T) { // close relative, i to be removed
+            toberemoved[i] = 1;
+            break;
+         }
+   IntArray ID(0);
+   for(int i = 0; i < toberemoved.Length(); i++)
+      if(toberemoved[i]==0) ID.Push(i);
+   int dimN = ID.Length();
+   for(int i = 0; i < dimN; i++)
+      for(int j = i+1; j < dimN; j++)
+         D[j][i] = D[ID[i]][ID[j]];
+   for(int i = 0; i < dimN; i++)
+      for(int j = i+1; j < dimN; j++)
+         D[i][j] = D[j][i];
+   for(int i = 0; i < dimN; i++)
+      D[i][i] = 1.0;
+
+   if(dimN < idCount){
+      String removefile = prefix;
+      removefile.Add("_relative_removed.txt");
+      FILE *fp = fopen(removefile, "wt");
+      if(fp == NULL) error("Cannot open %s to write.", (const char*)removefile);
+      printf("  %d samples as in file %s are removed due to close relatedness.\n",
+         idCount - dimN, (const char*)removefile);
+      for(int i = 0; i < idCount; i++)
+         if(toberemoved[i])
+            fprintf(fp, "%s %s\n",
+            (const char*)ped[phenoid[i]].famid, (const char*)ped[phenoid[i]].pid);
+      fclose(fp);
+   }
+   /*
+   Vector tempV(dimN);
+   tempV.Zero();
+   for(int j = 0; j < dimN; j++)
+      for(int i = 0; i < dimN; i++)
+         tempV[j] += D[i][j];
+   tempV.Multiply(1.0/dimN);
+   // (I-11'/N) * D
+   for(int i = 0; i < dimN; i++)
+      for(int j = 0; j < dimN; j++)
+         D[i][j] -= tempV[j];
+   tempV.Zero();
+   for(int i = 0; i < dimN; i++)
+      for(int j = 0; j < dimN; j++)
+         tempV[i] += D[i][j];
+   tempV.Multiply(1.0/dimN);
+   // D * (I-11'/N)
+   for(int i = 0; i < dimN; i++)
+      for(int j = 0; j < dimN; j++)
+         D[i][j] -= tempV[i];
+   */
+   printf("SVD starts at %s", currentTime());
+
+#ifdef WITH_LAPACK
+   printf("  LAPACK is used.\n");
+   char JOBZ = 'A';
+   int info;
+   double *A = new double[dimN*dimN];
+   int dimLA = dimN;
+   for(int i = 0; i < dimN; i++)
+     for(int j = 0; j < dimN; j++)
+       A[i*dimN+j] = D[j][i];
+   double *S = new double[dimN];
+   double *U = new double[dimN*dimN];
+   double *VT = new double[dimN*dimN];
+   int *IWORK = new int[dimN*8];
+   int LWORK = 8*dimN + 4*dimN*dimN;
+   double *WORK = new double[LWORK];
+   dgesdd_(&JOBZ, &dimLA, &dimLA, A, &dimLA, S, U, &dimLA, VT, &dimLA, WORK, &LWORK, IWORK, &info);
+   delete []U;
+   delete []IWORK;
+   delete []WORK;
+   delete []A;
+
+   int dimPC = dimN>20?20:dimN;
+   printf("Largest %d eigenvalues:", dimPC);
+   for(int i = 0; i < dimPC; i++)
+      printf(" %.2lf", S[i]);
+   printf("\n");
+   double totalVariance = 0;
+   double variance20 = 0;
+   for(int i = 0; i < dimPC; i++)
+      variance20 += S[i];
+   for(int i = 0; (S[i] > 1E-10) && (i < dimN-1); i++)
+      totalVariance += S[i];
+   printf("The first %d PCs are able to explain %.2lf / %.2lf = %.1lf%% of total variance.\n",
+      dimPC, variance20, totalVariance, variance20/totalVariance*100);
+   printf("The proportion of total variance explained (%%) by each PC is:\n  ");
+   for(int i = 0; i < dimPC; i++)
+      printf(" %.1lf", S[i]/totalVariance*100);
+   printf("\n");
+   delete []S;
+#else
+   printf("  Please re-compile KING with LAPACK library.\n");
+   SVD svd;
+   svd.Decompose(D);
+   printf("done\n");
+   if(svd.n == 0) return;
+   QuickIndex idx;
+   idx.Index(svd.w);
+
+   int dimPC = dimN>20?20:dimN;
+   printf("Largest %d eigenvalues:", dimPC);
+   for(int i = 0; i < dimPC; i++)
+      printf(" %.2lf", svd.w[idx[dimN-1-i]]);
+   printf("\n");
+#endif
+   String pedfile = prefix;
+   pedfile.Add("pc.txt");
+   FILE *fp = fopen(pedfile, "wt");
+   if(fp == NULL) error("Cannot open %s to write.", (const char*)pedfile);
+   fprintf(fp, "FID IID FA MO SEX AFF");
+   for(int j = 0; j < dimPC; j++)
+      fprintf(fp, " PC%d", j+1);
+   fprintf(fp, "\n");
+   for(int i = 0; i < dimN; i++){
+      int id = ID[i];
+      fprintf(fp, "%s %s %s %s %d",
+         (const char*)ped[phenoid[id]].famid, (const char*)ped[phenoid[id]].pid,
+         (const char*)ped[phenoid[id]].fatid, (const char*)ped[phenoid[id]].motid,
+         ped[phenoid[i]].sex);
+         fprintf(fp, " 1");
+         for(int j = 0; j < dimPC; j++)
+#ifdef WITH_LAPACK
+            fprintf(fp, " %.4lf", VT[i*dimN+j]);
+#else
+            fprintf(fp, " %.4lf", svd.v[i][idx[dimN-1-j]]);
+#endif
+      fprintf(fp, "\n");
+   }
+   fclose(fp);
+   printf("MDS ends at %s", currentTime());
+   printf("%d principal components saved in file %s\n",
+      dimPC, (const char*)pedfile);
+#ifdef WITH_LAPACK
+   delete []VT;
 #endif
 }
 
@@ -227,7 +1218,7 @@ void Engine::IBDGRM()
    int segCount = (chrSeg.Length()>>2);
    for(int seg = 0; seg < segCount; seg++){
       if(mincons)
-         IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], true, 2.5, mincons);
+         IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], true, 2500000, mincons);
       else
          IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], true);
       #pragma omp parallel for num_threads(defaultMaxCoreCount)
@@ -331,197 +1322,6 @@ void Engine::IBDGRM()
 #endif
 }
 
-void Engine::IBDVC()
-{
-   int N_Trait = traits.Length();
-   if(N_Trait == 0) error("Quantitative traits are not found for variance component analysis.");
-   int N_Covariate = covariates.Length();
-   IntArray validFlag(ped.count);
-   validFlag.Set(1);
-   for(int i = 0; i < ped.count; i++){
-      bool somemissing = false;
-      for(int t = 0; t < N_Trait; t++)
-         if(!ped[i].isPhenotyped(traits[t])) {
-            somemissing = true;
-            break;
-         }
-      if(somemissing) validFlag[i] = 0;
-      somemissing = false;
-      for(int j = 0; j < N_Covariate; j++)
-         if(ped[i].covariates[covariates[j]] == _NAN_){
-            somemissing = true;
-            break;
-         }
-      if(somemissing) validFlag[i] = 0;
-      if(geno[i]<0 || ped[i].ngeno == 0) validFlag[i] = 0;
-   }
-   ID.Dimension(0);
-   for(int i = 0; i < ped.count; i++)
-      if(validFlag[i]) ID.Push(i);
-   if(N_Trait>1)
-      printf("Individuals with less than %d phenotypes are removed.\n", N_Trait);
-   if(normalization)printf("Inverse normal transformation is applied to phenotypes.\n");
-
-   int N_ID = ID.Length();
-   printf("Calculating similarity matrix starts at %s", currentTime());
-   Matrix D(N_ID, N_ID);
-   D.Zero();
-   for(int i = 0; i < N_ID; i++) D[i][i] = 1.0;
-   bool IBDvalidFlag = PreSegment();
-   if(!IBDvalidFlag){
-      printf("%s\n", (const char*)segmessage);
-      printf("  Note chromosomal positions can be sorted conveniently using other tools such as PLINK.\n");
-      return;
-   }
-   IntArray pairIndex[2];
-   for(int i = 0; i < 2; i++)
-      pairIndex[i].Dimension(0);
-   IntArray allpairs(0);
-   for(int i = 0; i < N_ID; i++)
-      for(int j = i+1; j < N_ID; j++){
-         if(geno[ID[i]] < 0 || geno[ID[j]] < 0) continue;
-         allpairs.Push(geno[ID[i]]);
-         allpairs.Push(geno[ID[j]]);
-         pairIndex[0].Push(i);
-         pairIndex[1].Push(j);
-      }
-   IntArray ibdsegStorage[2], ibdsegIndex[2];
-   int segCount = (chrSeg.Length()>>2);
-   for(int seg = 0; seg < segCount; seg++){
-      if(mincons)
-         IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], true, 2.5, mincons);
-      else
-         IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], true);
-      int pairCount = pairIndex[0].Length();
-      for(int p = 0; p < pairCount; p++)
-         D[pairIndex[0][p]][pairIndex[1][p]] += (ibdsegStorage[0][p]*0.5 + ibdsegStorage[1][p])*0.000001;
-   }  // end of seg loop
-   for(int i = 0; i < N_ID; i++)
-      for(int j = i+1; j < N_ID; j++){
-         D[i][j] /= totalLength;
-         D[j][i] = D[i][j];
-      }
-   printf("Similarity matrix consists of sample covariance estimates, standardized by diagonal elements\n");
-   int degree[3];
-   for(int d = 0; d < 3; d++)
-      degree[d] = 0;
-   for(int i = 0; i < N_ID; i++)
-      for(int j = i+1; j < N_ID; j++)
-         if(D[i][j] > 0.8) // MZ twins
-            degree[0] ++;
-         else if(D[i][j] > 0.354) // 1st-degree relatives
-            degree[1] ++;
-         else if(D[i][j] > 0.177) // 2nd-degree relatives
-            degree[2] ++;
-   if(degree[0] || degree[1] || degree[2])
-      printf("Close relatives identified: %d MZ twins/duplicates, %d 1st-degree and %d 2nd-degree relative pairs\n",
-         degree[0], degree[1], degree[2]);
-   else
-      printf("No second-degree or closer relationships were found\n");
-
-   Matrix Y(N_ID, N_Trait);
-   Matrix X(N_ID, 1+N_Covariate);
-   for(int i = 0; i < N_ID; i++)
-      X[i][0] = 1.0;
-   for(int t = 0; t < N_Trait; t++)
-      for(int i = 0; i < N_ID; i++)
-         Y[i][t] = ped[ID[i]].traits[traits[t]];
-   for(int i = 0; i < N_ID; i++)
-      for(int j = 0; j < N_Covariate; j++)
-         X[i][j+1] = ped[ID[i]].covariates[covariates[j]];
-
-   Vector meanY(N_Trait);
-   meanY.Set(0.0);
-   int n;
-   for(int t = 0; t < N_Trait; t++){
-      n = 0;
-      for(int i = 0; i < N_ID; i++)
-         if(Y[i][t] != _NAN_) {
-            meanY[t] += Y[i][t];
-            n ++;
-         }
-      meanY[t] /= n;
-      for(int i = 0; i < N_ID; i++)
-         if(Y[i][t] == _NAN_)
-            Y[i][t] = meanY[t];
-   }
-
-   Vector tV(N_ID);
-   Cholesky chol;
-   QuickIndex idx;
-   for(int t = 0; t < N_Trait; t++){
-      if(normalization){
-         for(int i = 0; i < N_ID; i++)
-            tV[i] = Y[i][t];
-         idx.Index(tV);
-         for(int i = 0; i < N_ID;){
-            int start = i, end = i + 1;
-            while(end < N_ID && tV[idx[end]] == tV[idx[start]]) end++;
-            end --;
-            double q = ninv((start + (end-start)/2.0 + 0.5)/N_ID);
-            for(int j = start; j <= end; j++)
-               Y[idx[j]][t] = q;
-            i = end + 1;
-         }
-      }
-   }
-
-   double variances[2];
-   Vector coef(N_Covariate+1);
-   double IVY, PVYY, IVI, PVP;
-   Vector XVY(N_Covariate+1);
-   Matrix XVX(N_Covariate+1, N_Covariate+1);
-   printf("\nPolygenic parameter estimates\n");
-   printf("%-20s %7s %7s %9s", "TraitName", "Herit", "N", "Mu");
-   for(int i = 0; i < N_Covariate; i++)
-      printf(" %9s", (const char*)ped.covariateNames[covariates[i]]);
-   printf("\n");
-   for(int t = 0; t < N_Trait; t++){
-      coef.Zero();
-      IVY = PVYY = IVI = PVP = 0;
-      XVY.Zero();
-      XVX.Zero();
-      for(int i = 0; i < N_ID; i++){
-         for(int k = 0; k < N_Covariate+1; k++){
-            XVY[k] += X[i][k] * Y[i][t];
-            for(int l = 0; l < N_Covariate+1; l++)
-               XVX[k][l] += X[i][k] * X[i][l];
-         }
-      }
-      if(N_Covariate == 1) coef[0] = XVY[0] / XVX[0][0];
-      else{
-         Matrix tempM;
-         tempM.CholeskyInvert(XVX);
-         for(int i = 0; i < N_Covariate+1; i++){
-            coef[i] = 0;
-            for(int u = 0; u < N_Covariate+1; u++)
-               coef[i] += tempM[i][u] * XVY[u];
-         }
-      }
-      for(int i = 0; i < N_ID; i++)
-         for(int k = 0; k < N_Covariate+1; k++)
-            Y[i][t] -= coef[k] * X[i][k];
-      for(int i = 0; i < N_ID; i++){
-         IVY += Y[i][t] * Y[i][t];
-         IVI ++;
-      }
-      for(int u = 0; u < N_ID; u++)
-         for(int v = u+1; v < N_ID; v++) {
-            PVYY += D[u][v] * Y[u][t] * Y[v][t];
-            PVP += D[u][v] * D[u][v];
-         }
-      variances[0] = (IVY - IVI * PVYY / PVP) / IVI;
-      if(variances[0]<0) variances[0] =  0.000001;
-      variances[1] = PVYY / PVP;
-      if(variances[1]<0) variances[1] =  0.000001;
-      double h2 = variances[1] / (variances[0]+variances[1]);
-      printf("%-20s %7.5lf %7d", (const char*)ped.traitNames[traits[t]], h2, N_ID);
-      for(int i = 0; i < N_Covariate+1; i++)
-         printf(" %9.5lf", coef[i]);
-      printf("\n");
-   }
-}
-
 
 void Engine::IBDmapping(int nperm)
 {
@@ -617,7 +1417,7 @@ void Engine::IBDmapping(int nperm)
    long *seeds = new long[permCount];
    for(int p = 0; p < permCount; p++)
       seeds[p] = rand.NextInt();
-   IntArray ibdsegCount, ibdsegStorage[3][2], ibdsegIndex[3][2], pi[3];
+   IntArray ibdsegStorage[3][2], ibdsegIndex[3][2], pi[3];
    Vector delta, allnewdelta[FIXEDPERMCOUNT];
    IntArray *extremeCount = new IntArray[defaultMaxCoreCount];
    IntArray *allextremeCount[FIXEDPERMCOUNT];
@@ -635,7 +1435,7 @@ void Engine::IBDmapping(int nperm)
       int ndim = chrsegMax - chrsegMin + 1;
       for(int type = 0; type < 3; type++){
          if(mincons)
-            IBDSegOnly(allpairs[type], seg, ibdsegStorage[type][0], ibdsegIndex[type][0], ibdsegStorage[type][1], ibdsegIndex[type][1], false, 2.5, mincons);
+            IBDSegOnly(allpairs[type], seg, ibdsegStorage[type][0], ibdsegIndex[type][0], ibdsegStorage[type][1], ibdsegIndex[type][1], false, 2500000, mincons);
          else
             IBDSegOnly(allpairs[type], seg, ibdsegStorage[type][0], ibdsegIndex[type][0], ibdsegStorage[type][1], ibdsegIndex[type][1]);
          pi[type].Dimension(ndim);
@@ -836,7 +1636,7 @@ void Engine::IBDmapping(int nperm)
          double delta = localPi[2] - localPi[1];
          int base = ((w+chrsegMin)<<6);
          fprintf(fp, "%d\t%.3lf\t%s\t%s\t%.2G\t%.2G\t%.2G\t%.2G\t%.2G\n",
-            chr, (positions[base+31]+positions[base+32])/2,
+            chr, (bp[base+31]+bp[base+32])*0.0000005,
             (const char*)snpName[base+31], (const char*)snpName[base+32],
             localPi[0], localPi[1], localPi[2], delta, pvalue);
       }  // end of word loop
@@ -936,7 +1736,7 @@ void Engine::LocalH2()
          }
       }
       if(mincons)
-         IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], false, 2.5, mincons);
+         IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], false, 2500000, mincons);
       else
          IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1]);
       for(int k = 0; k < 2; k++){
@@ -1009,7 +1809,7 @@ void Engine::LocalH2()
             double h2 = lxy / lxx * 2;
             double r2 = lxy*lxy / (lxx*lyy);
             fprintf(fp, "%d\t%.3lf\t%s\t%s\t%s\t%d\t%d\t%.3lf\t%.3lf\n",
-               chr, (positions[base+31]+positions[base+32])/2,
+               chr, (bp[base+31]+bp[base+32])*0.0000005,
                (const char*)snpName[base+31], (const char*)snpName[base+32],
                (const char*)ped.traitNames[traits[t]],
                samplesize[t], predictedSS[t], r2, h2);
@@ -1058,7 +1858,6 @@ void Engine::IBDMI()
                allpairs.Push(s2);
                allpairs.Push(t2);
             }
-   int pairCount = allpairs.Length()>>1;
    char header[256];
    sprintf(header, "SNP\tChr\tPos\tN_IBD\tN_Inf\tN_MI\tR_InfMI\tRate_MI\n");
    String outfile(prefix);
@@ -1087,7 +1886,7 @@ void Engine::IBDMI()
          printf("  Chr %d...\n", chromosomes[chrsegMin<<6]);
       int ndim = chrsegMax - chrsegMin + 1;
       if(mincons)
-         IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], false, 2.5, mincons);
+         IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], false, 2500000, mincons);
       else
          IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1]);
       int tempcount = (ibdsegStorage[0].Length()>>1);
@@ -1149,7 +1948,7 @@ void Engine::IBDMI()
             double infErr = local_MI * 1.0 / (local_infoCount+local_MI);
             if(error > 0.001)
                fprintf(fp, "%s\t%d\t%.3lf\t%d\t%d\t%d\t%.3lf\t%.3lf\n",
-                  (const char*)snpName[base+k], chr, positions[base+k],
+                  (const char*)snpName[base+k], chr, bp[base+k]*0.000001,
                   local_ibdCount, local_infoCount+local_MI, local_MI, infErr, error);
          }
       }  // end of word loop
@@ -1262,7 +2061,7 @@ void Engine::PopulationIBD()
                      allpairs.Push(aff[pop][t2]);
                   }
          if(mincons)
-            IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], false, 2.5, mincons);
+            IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], false, 2500000, mincons);
          else
             IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1]);
          for(int k = 0; k < 2; k++){
@@ -1285,7 +2084,7 @@ void Engine::PopulationIBD()
       for(int w = 0; w < ndim; w++){
          int base = ((w+chrsegMin)<<6);
          fprintf(fp, "%d\t%.3lf\t%s\t%s",
-            chr, (positions[base+31]+positions[base+32])/2,
+            chr, (bp[base+31]+bp[base+32])*0.0000005,
             (const char*)snpName[base+31], (const char*)snpName[base+32]);
          for(int pop = 0; pop < popCount; pop++){
             double localpi = pi[pop][w] * 0.5 / (affCount[pop]*(affCount[pop]-1)/2);
@@ -1372,7 +2171,7 @@ void Engine::IBDGDT()
       for(int m = 0; m < (ndim<<5); m++)
          T[m]=NT[m]=0;
       if(mincons)
-         IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], false, 2.5, mincons);
+         IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], false, 2500000, mincons);
       else
          IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1]);
       int tempcount = (ibdsegStorage[0].Length()>>1);
@@ -1413,12 +2212,12 @@ void Engine::IBDGDT()
                else
                   tdt = 0;
                fprintf(fp, "%s\t%d\t%.3lf\t%d\t%d\t%.2lf\n",
-                  (const char*)snpName[pos], chr, positions[pos],
+                  (const char*)snpName[pos], chr, bp[pos]*0.000001,
                   TCount[k], NTCount[k], tdt);
             }
          }  // end of word loop
-      delete T;
-      delete NT;
+      delete []T;
+      delete []NT;
    }  // end of seg loop
    fclose(fp);
    printf("IBD mapping ends at %s", currentTime());
@@ -1527,7 +2326,7 @@ void Engine::PopulationDistance()
                         allpairs.Push(aff[p2][t2]);
                }
             if(mincons)
-               IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], true, 2.5, mincons);
+               IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], true, 2500000, mincons);
             else
                IBDSegOnly(allpairs, seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], true);
             int pairCount = allpairs.Length()/2;
@@ -1653,7 +2452,7 @@ void Engine::AncestryInference()
                allpairs.Push(aff[a+1][j]);
             }
             if(mincons)
-               IBDSegOnly(allpairs, seg, ibdsegStorage[a][0][person], ibdsegIndex[a][0][person], ibdsegStorage[a][1][person], ibdsegIndex[a][1][person], false, 2.5, mincons);
+               IBDSegOnly(allpairs, seg, ibdsegStorage[a][0][person], ibdsegIndex[a][0][person], ibdsegStorage[a][1][person], ibdsegIndex[a][1][person], false, 2500000, mincons);
             else
                IBDSegOnly(allpairs, seg, ibdsegStorage[a][0][person], ibdsegIndex[a][0][person], ibdsegStorage[a][1][person], ibdsegIndex[a][1][person]);
          }
@@ -1901,8 +2700,7 @@ void Engine::AUCpredicting(IntArray & allchr, IntArray & allpos)
          }
       if(stopFlag) continue;
       int chrsegMax = chrSeg[(seg<<2)|1];
-      if(positions[chrsegMin<<6] >= allpos[chrIndex]*0.000001
-         || positions[(chrsegMax<<6)|0x3F] <= allpos[chrIndex]*0.000001)
+      if(bp[chrsegMin<<6] >= allpos[chrIndex] || bp[(chrsegMax<<6)|0x3F] <= allpos[chrIndex])
          continue;
       for(int type = 0; type < 3; type++){
          int afftype[2];
@@ -1914,14 +2712,14 @@ void Engine::AUCpredicting(IntArray & allchr, IntArray & allpos)
             afftype[0] = afftype[1] = 1;
          }
          if(mincons)
-            IBDSegOnly(allpairs[type], seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], false, 2.5, mincons);
+            IBDSegOnly(allpairs[type], seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], false, 2500000, mincons);
          else
             IBDSegOnly(allpairs[type], seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1]);
          for(int k = 0; k < 2; k++){
             int tempcount = (ibdsegStorage[k].Length()>>1);
             for(int i = 0; i < tempcount; i++){
-               if(positions[ibdsegStorage[k][i*2]] >= allpos[chrIndex]*0.000001
-                  || positions[ibdsegStorage[k][i*2+1]] <= allpos[chrIndex]*0.000001)
+               if(bp[ibdsegStorage[k][i*2]] >= allpos[chrIndex]
+                  || bp[ibdsegStorage[k][i*2+1]] <= allpos[chrIndex])
                   continue;
                int index = ibdsegIndex[k][i];
                int id1 = allpairs[type][index*2];
@@ -1966,7 +2764,7 @@ void Engine::AUCpredicting(IntArray & allchr, IntArray & allpos)
    }  // AUC of Aff and connection[1]/(connection[0]+connection[1])
    NUU /= 2;
    NAA /= 2;
-   AUC = ComputeAUC(risks, affections, false, 1000);
+   AUC = ComputeAUC(risks, affections, 0);
    printf("Chr");
    for(int i = 0; i < posCount; i++)
       printf("\t%d:%d", allchr[i], allpos[i]);
@@ -1987,7 +2785,7 @@ void Engine::AUCpredicting(IntArray & allchr, IntArray & allpos)
             else
                risks[i] = -9;
          }
-         AUC = ComputeAUC(risks, affections, false, 1000);
+         AUC = ComputeAUC(risks, affections, 0);
          printf("Chr %d:%d\tAUC=%.3lf\n", allchr[p], allpos[p], AUC);
       }
       for(int i = 0; i < idCount; i++){
@@ -2000,7 +2798,7 @@ void Engine::AUCpredicting(IntArray & allchr, IntArray & allpos)
          else
             risks[i] = -9;
       }
-      AUC = ComputeAUC(risks, affections, false, 1000);
+      AUC = ComputeAUC(risks, affections, 0);
       printf("Additive model: AUC=%.3lf\n", AUC);
 
       for(int i = 0; i < idCount; i++){
@@ -2016,7 +2814,7 @@ void Engine::AUCpredicting(IntArray & allchr, IntArray & allpos)
          }
          if(!validFlag) risks[i] = -9;
       }
-      AUC = ComputeAUC(risks, affections, false, 1000);
+      AUC = ComputeAUC(risks, affections, 0);
       printf("Multiplicative model: AUC=%.3lf\n", AUC);
 
       for(int i = 0; i < idCount; i++){
@@ -2030,7 +2828,7 @@ void Engine::AUCpredicting(IntArray & allchr, IntArray & allpos)
             }
          }
       }
-      AUC = ComputeAUC(risks, affections, false, 1000);
+      AUC = ComputeAUC(risks, affections, 0);
       printf("Max model: AUC=%.3lf\n", AUC);
 
       double T = aff[1].Length()*1.0 / (aff[0].Length()+aff[1].Length());
@@ -2050,7 +2848,7 @@ void Engine::AUCpredicting(IntArray & allchr, IntArray & allpos)
             }
          }
       }
-      AUC = ComputeAUC(risks, affections, false, 1000);
+      AUC = ComputeAUC(risks, affections, 0);
       printf("Position1-preferred model: AUC=%.3lf\n", AUC);
    }
    printf("AUC-based IBD mapping ends at %s", currentTime());
@@ -2071,48 +2869,29 @@ void Engine::AUCmapping()
    if(prefix!="king")
       printf("\t--prefix %s\n", (const char*)prefix);
    printf("\n");
-
    bool IBDvalidFlag = PreSegment();
    if(!IBDvalidFlag){
       printf("%s\n", (const char*)segmessage);
       printf("  Note chromosomal positions can be sorted conveniently using other tools such as PLINK.\n");
       return;
    }
-
    printf("IBD-based AUC mapping starts at %s", currentTime());
-   IntArray allpairs[3], aff[2];
-   int pairCount[3], affcount[2];
-   for(int k = 0; k < 3; k++)
-      allpairs[k].Dimension(0);
-   for(int k = 0; k < 2; k++)
-      aff[k].Dimension(0);
-   for(int i = 0; i < idCount; i++){
-      if(ped[phenoid[i]].affections[0] == 2)
-         aff[1].Push(i);
-      else if(ped[phenoid[i]].affections[0] == 1)
-         aff[0].Push(i);
-   }
-   const int BLOCKSIZE = 8;
-   for(int k = 0; k < 2; k++){
-      affcount[k] = aff[k].Length();
-      for(int s = 0; s < affcount[k]; s += BLOCKSIZE)
-         for(int s2 = s; s2 < s+BLOCKSIZE && s2 < affcount[k]; s2++)
-            for(int t = s; t < affcount[k]; t += BLOCKSIZE)
-               for(int t2 = t; t2 < t+BLOCKSIZE && t2 < affcount[k]; t2++){
-                  if(t==s && t2 <= s2) continue;
-                  allpairs[k*2].Push(aff[k][s2]);
-                  allpairs[k*2].Push(aff[k][t2]);
-               }
-   }
-   for(int s = 0; s < affcount[0]; s += BLOCKSIZE)
-      for(int s2 = s; s2 < s+BLOCKSIZE && s2 < affcount[0]; s2++)
-         for(int t = 0; t < affcount[1]; t += BLOCKSIZE)
-            for(int t2 = t; t2 < t+BLOCKSIZE && t2 < affcount[1]; t2++){
-               allpairs[1].Push(aff[0][s2]);
-               allpairs[1].Push(aff[1][t2]);
-            }
-   for(int k = 0; k < 3; k++)
-      pairCount[k] = allpairs[k].Length()>>1;
+
+   IntArray affections(idCount);
+   for(int i = 0; i < idCount; i++)
+      affections[i] = ped[phenoid[i]].affections[0]-1;
+   const int BLOCKSIZE = 256;
+   IntArray allpairs[3];
+   int pairCount[3], affCount[2];
+   affCount[0] = affCount[1] = 0;
+   for(int i = 0; i < idCount; i++)
+      if(affections[i] == 1)
+         affCount[1] ++;
+      else if(affections[i] == 0)
+         affCount[0] ++;
+   pairCount[0] = affCount[0] * (affCount[0]-1) / 2;
+   pairCount[1] = affCount[0] * affCount[1];
+   pairCount[2] = affCount[1] * (affCount[1]-1) / 2;
    if(pairCount[2] == 0) {printf("No ARPs are found.\n"); return;}
    else printf("#%d URPs, #%d DRPs, #%d ARPs are used for AUC mapping.\n",
       pairCount[0], pairCount[1], pairCount[2]);
@@ -2127,11 +2906,10 @@ void Engine::AUCmapping()
    IntArray *connection[2];
    for(int a = 0; a < 2; a++)
       connection[a] = new IntArray [idCount];
-   IntArray affections(idCount);
-   for(int i = 0; i < idCount; i++)
-      affections[i] = ped[phenoid[i]].affections[0]-1;
+   IntArray subpairs;
    int segCount = (chrSeg.Length()>>2);
    printf("Scanning genome...\n");
+   int afftype[2];
    for(int seg = 0; seg < segCount; seg++){
       int chrsegMin = chrSeg[seg<<2];
       int chrsegMax = chrSeg[(seg<<2)|1];
@@ -2142,49 +2920,65 @@ void Engine::AUCmapping()
             connection[a][i].Zero();
          }
       for(int type = 0; type < 3; type++){
-         int afftype[2];
-         if(type == 0){
-            afftype[0] = afftype[1] = 0;
-         }else if(type == 1){
-            afftype[0] = 0; afftype[1] = 1;
-         }else{
-            afftype[0] = afftype[1] = 1;
-         }
-         if(mincons)
-            IBDSegOnly(allpairs[type], seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], false, 2.5, mincons);
-         else
-            IBDSegOnly(allpairs[type], seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1]);
          pi[type].Dimension(ndim);
          pi[type].Zero();
-         for(int k = 0; k < 2; k++){
-            int localvalue = k+1;
-            int tempcount = (ibdsegStorage[k].Length()>>1);
-            for(int i = 0; i < tempcount; i++){
-               int index = ibdsegIndex[k][i];
-               int id1 = allpairs[type][index*2];
-               int id2 = allpairs[type][index*2+1];
-               int startword = ((ibdsegStorage[k][i*2]-1)>>6)+1;
-               int stopword = ((ibdsegStorage[k][i*2+1]+1)>>6)-1;
-               int localcount = stopword-chrsegMin;
-               int w = startword-chrsegMin-1;
-               if(w >= 0 && ibdsegStorage[k][i*2] <= (startword<<6)-33){
-                  pi[type][w] += localvalue;
-                  connection[afftype[1]][id1][w] += localvalue;
-                  connection[afftype[0]][id2][w] += localvalue;
+      }
+      for(int s = 0; s < idCount; s += BLOCKSIZE){
+         int sMax = s+BLOCKSIZE < idCount? s+BLOCKSIZE: idCount;
+         for(int t = s; t < idCount; t += BLOCKSIZE){
+            int tMax = t+BLOCKSIZE < idCount? t+BLOCKSIZE: idCount;
+            for(int type = 0; type < 3; type ++)
+               allpairs[type].Dimension(0);
+            for(int s2 = s; s2 < sMax; s2++)
+               for(int t2 = t; t2 < tMax; t2++){
+                  if(t==s && t2 <= s2) continue;
+                  if(affections[s2]<0 || affections[t2]<0) continue;
+                  int type = affections[s2]+affections[t2];
+                  if(type == 1 && affections[s2]){
+                     allpairs[type].Push(t2);
+                     allpairs[type].Push(s2);
+                  }else{
+                     allpairs[type].Push(s2);
+                     allpairs[type].Push(t2);
+                  }
                }
-               for(w++; w <= localcount; w++){
-                  pi[type][w] += localvalue;
-                  connection[afftype[1]][id1][w] += localvalue;
-                  connection[afftype[0]][id2][w] += localvalue;
+            for(int type = 0; type < 3; type++){
+               if(type == 0){
+                  afftype[0] = afftype[1] = 0;
+               }else if(type == 1){
+                  afftype[0] = 0; afftype[1] = 1;
+               }else{
+                  afftype[0] = afftype[1] = 1;
                }
-               if(w < ndim && (ibdsegStorage[k][i*2+1]&0x3F) >= 32){
-                  pi[type][w] += localvalue;
-                  connection[afftype[1]][id1][w] += localvalue;
-                  connection[afftype[0]][id2][w] += localvalue;
-               }
-            }  // end of segment i loop
-         }  // end of IBD1 or IBD2 k loop
-      }  // end of pair type loop
+               if(mincons)
+                  IBDSegOnly(allpairs[type], seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1], false, 2500000, mincons);
+               else
+                  IBDSegOnly(allpairs[type], seg, ibdsegStorage[0], ibdsegIndex[0], ibdsegStorage[1], ibdsegIndex[1]);
+               for(int k = 0; k < 2; k++){
+                  int localvalue = k+1;
+                  int tempcount = (ibdsegStorage[k].Length()>>1);
+                  for(int i = 0; i < tempcount; i++){
+                     int index = ibdsegIndex[k][i];
+                     int id1 = allpairs[type][index*2];
+                     int id2 = allpairs[type][index*2+1];
+                     int startword = ((ibdsegStorage[k][i*2]-1)>>6)+1;
+                     int stopword = ((ibdsegStorage[k][i*2+1]+1)>>6)-1;
+                     int startw = startword-chrsegMin;
+                     if(startw >= 1 && ibdsegStorage[k][i*2] <= (startword<<6)-33)
+                        startw --;
+                     int stopw = stopword-chrsegMin;
+                     if(stopw+1 < ndim && (ibdsegStorage[k][i*2+1]&0x3F) >= 32)
+                        stopw ++;
+                     for(int w = startw; w <= stopw; w++){
+                        pi[type][w] += localvalue;
+                        connection[afftype[1]][id1][w] += localvalue;
+                        connection[afftype[0]][id2][w] += localvalue;
+                     }  // end of w loop for word
+                  }  // end of segment i loop
+               }  // end of IBD1 or IBD2 k loop
+            }  // end of type loop for IBD type
+         }  // end of t loop for pair2
+      }  // end of s type loop for pair1
       int chr = chromosomes[chrsegMin<<6];
       double localPi[3];
       Vector AUC(ndim);
@@ -2221,9 +3015,7 @@ void Engine::AUCmapping()
          NUU[w] = int(NUU[w]*0.25+0.5);
          NUA[w] = int(NUA[w]*0.5+0.5);
          NAA[w] = int(NAA[w]*0.25+0.5);
-         AUC[w] = ComputeAUC(risks, affections, false, 100);
-         if(AUC[w] > 0.6)
-            AUC[w] = ComputeAUC(risks, affections, false, 1000);
+         AUC[w] = ComputeAUC(risks, affections, 0);
       }
 #ifdef _OPENMP
 }
@@ -2233,16 +3025,16 @@ void Engine::AUCmapping()
       for(int w = 0; w < ndim; w++){
          for(int type = 0; type < 3; type++)
             localPi[type] = pi[type][w] * 0.25 / pairCount[type];
-         double success = 1 - NMISS[w]*1.0/(affcount[0]+affcount[1]);
+         double success = 1 - NMISS[w]*1.0/(affCount[0]+affCount[1]);
          int base = ((w+chrsegMin)<<6);
          fprintf(fp, "%d\t%.3lf\t%s\t%s\t%.2G\t%.2G\t%.2G\t%d\t%d\t%d\t%d\t%.3lf\t%.3lf\n",
-            chr, (positions[base+31]+positions[base+32])/2,
+            chr, (bp[base+31]+bp[base+32])*0.0000005,
             (const char*)snpName[base+31], (const char*)snpName[base+32],
             localPi[0], localPi[1], localPi[2], NMISS[w], NUU[w], NUA[w], NAA[w], success, AUC[w]);
          if(AUC[w] > maxAUC && success > 0.9){
             maxAUC = AUC[w];
             sprintf(buffer, "%d\t%.3lf\t%s\t%s\t%.2G\t%.2G\t%.2G\t%d\t%d\t%d\t%d\t%.3lf\t%.3lf\n",
-            chr, (positions[base+31]+positions[base+32])/2,
+            chr, (bp[base+31]+bp[base+32])*0.0000005,
             (const char*)snpName[base+31], (const char*)snpName[base+32],
             localPi[0], localPi[1], localPi[2], NMISS[w], NUU[w], NUA[w], NAA[w], success, AUC[w]);
          }
@@ -2259,15 +3051,68 @@ void Engine::AUCmapping()
    printf("IBD-based AUC mapping ends at %s", currentTime());
    printf("Genome-wide AUC-mapping scan results saved in file %s\n", (const char*)outfile);
 }
+               /*
+               int w = startword-chrsegMin-1;
+               if(w >= 0 && ibdsegStorage[k][i*2] <= (startword<<6)-33){
+                  pi[type][w] += localvalue;
+                  connection[afftype[1]][id1][w] += localvalue;
+                  connection[afftype[0]][id2][w] += localvalue;
+               }
+               for(w++; w <= localcount; w++){
+                  pi[type][w] += localvalue;
+                  connection[afftype[1]][id1][w] += localvalue;
+                  connection[afftype[0]][id2][w] += localvalue;
+               }
+               if(w < ndim && (ibdsegStorage[k][i*2+1]&0x3F) >= 32){
+                  pi[type][w] += localvalue;
+                  connection[afftype[1]][id1][w] += localvalue;
+                  connection[afftype[0]][id2][w] += localvalue;
+               } */
+
+                     /*
+   IntArray allpairs[3], aff[2];
+   int pairCount[3], affcount[2];
+   for(int k = 0; k < 3; k++)
+      allpairs[k].Dimension(0);
+   for(int k = 0; k < 2; k++)
+      aff[k].Dimension(0);
+   for(int i = 0; i < idCount; i++){
+      if(ped[phenoid[i]].affections[0] == 2)
+         aff[1].Push(i);
+      else if(ped[phenoid[i]].affections[0] == 1)
+         aff[0].Push(i);
+   }
+   const int BLOCKSIZE = 8;
+   for(int k = 0; k < 2; k++){
+      affcount[k] = aff[k].Length();
+      for(int s = 0; s < affcount[k]; s += BLOCKSIZE)
+         for(int s2 = s; s2 < s+BLOCKSIZE && s2 < affcount[k]; s2++)
+            for(int t = s; t < affcount[k]; t += BLOCKSIZE)
+               for(int t2 = t; t2 < t+BLOCKSIZE && t2 < affcount[k]; t2++){
+                  if(t==s && t2 <= s2) continue;
+                  allpairs[k*2].Push(aff[k][s2]);
+                  allpairs[k*2].Push(aff[k][t2]);
+               }
+   }
+   for(int s = 0; s < affcount[0]; s += BLOCKSIZE)
+      for(int s2 = s; s2 < s+BLOCKSIZE && s2 < affcount[0]; s2++)
+         for(int t = 0; t < affcount[1]; t += BLOCKSIZE)
+            for(int t2 = t; t2 < t+BLOCKSIZE && t2 < affcount[1]; t2++){
+               allpairs[1].Push(aff[0][s2]);
+               allpairs[1].Push(aff[1][t2]);
+            }
+   for(int k = 0; k < 3; k++)
+      pairCount[k] = allpairs[k].Length()>>1;
+   if(pairCount[2] == 0) {printf("No ARPs are found.\n"); return;}
+   else printf("#%d URPs, #%d DRPs, #%d ARPs are used for AUC mapping.\n",
+      pairCount[0], pairCount[1], pairCount[2]);
+*/
+
 
 void Engine::NPL()
 {
    printf("\nOptions in effect:\n");
    printf("\t--npl\n");
-   if(mincons)
-      printf("\t--mincons %d\n", mincons);
-   if(relativedegree)
-      printf("\t--degree %d\n", relativedegree);
    if(Bit64Flag)
       printf("\t--sysbit 64\n");
    if(CoreCount)
@@ -2285,7 +3130,7 @@ void Engine::NPL()
       return;
    }
 
-   IntArray allpairs[3], sibs[2];
+   IntArray allpairs[3], sibs[2], allsibs(0), unrelatedpairs(0);
    int pairCount[3], sibcount[2];
    for(int k = 0; k < 3; k++)
       allpairs[k].Dimension(0);
@@ -2308,6 +3153,9 @@ void Engine::NPL()
                      allpairs[k*2].Push(sibs[k][t]);
                   }
             }
+            if(sibcount[1] > 1)
+               for(int s = 0; s < sibcount[1]; s++)
+                  allsibs.Push(phenoid[sibs[1][s]]);
             for(int s = 0; s < sibcount[0]; s++)
                for(int t = 0; t < sibcount[1]; t++){
                   allpairs[1].Push(sibs[0][s]);
@@ -2315,41 +3163,71 @@ void Engine::NPL()
                }
          }
    }
+   int allsibcount = allsibs.Length();
+   for(int i = 0; i < allsibcount; i++)
+      for(int j = i+1; j < allsibcount; j++)
+         if(ped[allsibs[i]].famid != ped[allsibs[j]].famid){
+            unrelatedpairs.Push(geno[allsibs[i]]);
+            unrelatedpairs.Push(geno[allsibs[j]]);
+         }
+   int unrelatedpairsCount = unrelatedpairs.Length()/2;
+
    for(int k = 0; k < 3; k++)
       pairCount[k] = allpairs[k].Length()>>1;
    if(pairCount[2] == 0) {printf("No ASPs are found.\n"); return;}
-   else printf("#%d ASPs (and #%d DSPs) are used for NPL scan.\n",
-      pairCount[2], pairCount[1]);
-   char header[256], buffer[256];
-   if(pairCount[1])
-      sprintf(header, "Chr\tPos\tFlankSNP1\tFlankSNP2\tPI_USP\tPI_DSP\tPI_ASP\tLOD10\tLOD3\tLOD_ASP\tLOD_DSP\n");
+   else if(pairCount[1] > pairCount[2]*0.1 && pairCount[1] >= 20)
+      printf("%d ASPs, %d DSPs and %d unrelated pairs are used for ASP/DSP NPL scan.\n",
+         pairCount[2], pairCount[1], unrelatedpairsCount);
    else
-      sprintf(header, "Chr\tPos\tFlankSNP1\tFlankSNP2\tPI_ASP\tLOD10\tLOD3\tLOD_ASP\n");
+      printf("%d ASPs and %d unrelated pairs are used for ASP NPL scan.\n",
+         pairCount[2], unrelatedpairsCount);
+   char header[256], buffer[256];
+   if(pairCount[1] > pairCount[2]*0.1 && pairCount[1] >= 20) // enough DSP
+      sprintf(header, "Chr\tPos\tFlankSNP1\tFlankSNP2\tPI_USP\tPI_DSP\tPI_ASP\tPI_AP\tLOD_Raw\tLOD_ASP\tLODwDSP\n");
+   else
+      sprintf(header, "Chr\tPos\tFlankSNP1\tFlankSNP2\tPI_ASP\tPI_AP\tLOD_Raw\tLOD_ASP\n");
    String outfile(prefix);
    outfile.Add(".npl");
    FILE *fp = fopen(outfile, "wt");
    fprintf(fp, "%s", header);
    bool headerPrinted=false;
-   IntArray ibdsegCount, ibdsegStorage[2], ibdsegIndex[2];
-   Vector pi[2][3];
+   IntArray ibdsegStorage[2], ibdsegIndex[2];
+   Vector pi[3], pi0;
    int segCount = (chrSeg.Length()>>2);
    const double LODfactor = 0.5 / log(10.0);
    for(int seg = 0; seg < segCount; seg++){
       int chrsegMin = chrSeg[seg<<2];
       int chrsegMax = chrSeg[(seg<<2)|1];
       int ndim = chrsegMax - chrsegMin + 1;
-      for(int longseg = 0; longseg < 2; longseg++)
-         for(int type = 0; type < 3; type++){
-            if(pairCount[type]==0) continue;
-            if(mincons)
-               IBDSegOnly(allpairs[type], seg, ibdsegStorage[0], ibdsegIndex[0],
-               ibdsegStorage[1], ibdsegIndex[1], false, longseg==1?10:3, mincons);
-            else
-               IBDSegOnly(allpairs[type], seg, ibdsegStorage[0], ibdsegIndex[0],
-               ibdsegStorage[1], ibdsegIndex[1], false, longseg==1?10:3, 10000);
-            pi[longseg][type].Dimension(ndim);
-            pi[longseg][type].Zero();
-            for(int k = 0; k < 2; k++){
+      IBDSegOnly(unrelatedpairs, seg, ibdsegStorage[0], ibdsegIndex[0],
+         ibdsegStorage[1], ibdsegIndex[1], false, 2000000, 10000);
+      pi0.Dimension(ndim);
+      pi0.Zero();
+      for(int k = 0; k < 2; k++){
+         int localvalue = k+1;
+         int tempcount = (ibdsegStorage[k].Length()>>1);
+         for(int i = 0; i < tempcount; i++){
+            int startword = ((ibdsegStorage[k][i*2]-1)>>6)+1;
+            int stopword = ((ibdsegStorage[k][i*2+1]+1)>>6)-1;
+            int localcount = stopword-chrsegMin;
+            int w = startword-chrsegMin-1;
+            if(w >= 0 && ibdsegStorage[k][i*2] <= (startword<<6)-33)
+               pi0[w] += localvalue;
+            for(w++; w <= localcount; w++)
+               pi0[w] += localvalue;
+            if(w < ndim && (ibdsegStorage[k][i*2+1]&0x3F) >= 32)
+               pi0[w] += localvalue;
+         }
+      }  // end of loop k for IBD1 or IBD2
+      for(int w = 0; w <= (chrsegMax-chrsegMin); w++)
+         pi0[w] *= (0.5 / unrelatedpairsCount);
+      for(int type = 0; type < 3; type++){
+         if(pairCount[type]==0) continue;
+         IBDSegOnly(allpairs[type], seg, ibdsegStorage[0], ibdsegIndex[0],
+            ibdsegStorage[1], ibdsegIndex[1], false, 2000000, 10000);
+         pi[type].Dimension(ndim);
+         pi[type].Zero();
+         for(int k = 0; k < 2; k++){
                int localvalue = k+1;
                int tempcount = (ibdsegStorage[k].Length()>>1);
                for(int i = 0; i < tempcount; i++){
@@ -2358,53 +3236,55 @@ void Engine::NPL()
                   int localcount = stopword-chrsegMin;
                   int w = startword-chrsegMin-1;
                   if(w >= 0 && ibdsegStorage[k][i*2] <= (startword<<6)-33)
-                     pi[longseg][type][w] += localvalue;
+                     pi[type][w] += localvalue;
                   for(w++; w <= localcount; w++)
-                     pi[longseg][type][w] += localvalue;
+                     pi[type][w] += localvalue;
                   if(w < ndim && (ibdsegStorage[k][i*2+1]&0x3F) >= 32)
-                     pi[longseg][type][w] += localvalue;
+                     pi[type][w] += localvalue;
                }
-            }  // end of loop k for IBD1 or IBD2
-            for(int w = 0; w <= (chrsegMax-chrsegMin); w++)
-               pi[longseg][type][w] *= (0.5 / pairCount[type]);
-         }  // end of loop type for USP, DSP, or ASP
+         }  // end of loop k for IBD1 or IBD2
+         for(int w = 0; w <= (chrsegMax-chrsegMin); w++)
+            pi[type][w] *= (0.5 / pairCount[type]);
+      }  // end of loop type for USP, DSP, or ASP
       int chr = chromosomes[chrsegMin<<6];
       double maxLOD = 0.0;
       for(int w = 0; w <= chrsegMax - chrsegMin; w++){
          int base = ((w+chrsegMin)<<6);
-         double LOD3 = pairCount[2]*8.0*(pi[0][2][w]-0.5)*(pi[0][2][w]-0.5)*LODfactor;
-         double LOD10 = pairCount[2]*8.0*(pi[1][2][w]-0.5)*(pi[1][2][w]-0.5)*LODfactor;
-         if(pi[0][2][w] < 0.5)
-            LOD3 = -LOD3;
-         if(pi[1][2][w] < 0.5)
-            LOD10 = -LOD10;
-         double LOD_ASP = (LOD3 > LOD10+1)? LOD10: LOD3;   // Z = sqrt(8N)(pi-1/2)
-         if(pairCount[1]){ // DSP exists
+         double diff = pi[2][w]-0.5;
+         double LOD2 = pairCount[2]*8.0*diff*diff*LODfactor;
+         if(pi[2][w] < 0.5)
+            LOD2 = -LOD2;
+         diff = pi[2][w] - pi0[w] - 0.5;
+         double LOD_ASP = pairCount[2] * 8.0 * diff * diff * LODfactor;// Z = sqrt(8N)(pi-pi0-1/2)
+         if(diff < 0) LOD_ASP = -LOD_ASP;
+         if(pairCount[1] > pairCount[2]*0.1 && pairCount[1]>=20){ // DSP exists
+            diff = pi[2][w]-pi[1][w];
             double LOD_DSP = 8.0*pairCount[1]*pairCount[2]/(pairCount[1]+pairCount[2])*
-               (pi[0][2][w]-pi[0][1][w])*(pi[0][2][w]-pi[0][1][w])*LODfactor;
-            if(pi[0][2][w] < pi[0][1][w]) LOD_DSP = -LOD_DSP;
-            fprintf(fp, "%d\t%.3lf\t%s\t%s\t%.3lf\t%.3lf\t%.3lf\t%.2lf\t%.2lf\t%.2lf\t%.2lf\n",
-               chr, (positions[base+31]+positions[base+32])/2,
+               diff*diff*LODfactor;
+            if(pi[2][w] < 0.5) LOD_DSP = 0;
+            else if(pi[2][w] < pi[1][w]) LOD_DSP = -LOD_DSP;
+            fprintf(fp, "%d\t%.3lf\t%s\t%s\t%.3lf\t%.3lf\t%.3lf\t%.3lf\t%.2lf\t%.2lf\t%.2lf\n",
+               chr, (bp[base+31]+bp[base+32])*0.0000005,
                (const char*)snpName[base+31], (const char*)snpName[base+32],
-               pi[0][0][w], pi[0][1][w], pi[0][2][w], LOD10, LOD3, LOD_ASP, LOD_DSP);
+               pi[0][w], pi[1][w], pi[2][w], pi0[w], LOD2, LOD_ASP, LOD_DSP);
             if(LOD_DSP > 3 && LOD_DSP > maxLOD){
                maxLOD = LOD_DSP;
-               sprintf(buffer, "%d\t%.3lf\t%s\t%s\t%.3lf\t%.3lf\t%.3lf\t%.2lf\t%.2lf\t%.2lf\t%.2lf\n",
-               chr, (positions[base+31]+positions[base+32])/2,
+               sprintf(buffer, "%d\t%.3lf\t%s\t%s\t%.3lf\t%.3lf\t%.3lf\t%.3lf\t%.2lf\t%.2lf\t%.2lf\n",
+               chr, (bp[base+31]+bp[base+32])*0.0000005,
                (const char*)snpName[base+31], (const char*)snpName[base+32],
-               pi[0][0][w], pi[0][1][w], pi[0][2][w], LOD10, LOD3, LOD_ASP, LOD_DSP);
+               pi[0][w], pi[1][w], pi[2][w], pi0[w], LOD2, LOD_ASP, LOD_DSP);
             }
          }else{   // ASP only
-            fprintf(fp, "%d\t%.3lf\t%s\t%s\t%.3lf\t%.2lf\t%.2lf\t%.2lf\n",
-               chr, (positions[base+31]+positions[base+32])/2,
+            fprintf(fp, "%d\t%.3lf\t%s\t%s\t%.3lf\t%.3lf\t%.2lf\t%.2lf\n",
+               chr, (bp[base+31]+bp[base+32])*0.0000005,
                (const char*)snpName[base+31], (const char*)snpName[base+32],
-               pi[0][2][w], LOD10, LOD3, LOD_ASP);
+               pi[2][w], pi0[w], LOD2, LOD_ASP);
             if(LOD_ASP > 3 && LOD_ASP > maxLOD){
                maxLOD = LOD_ASP;
-               sprintf(buffer, "%d\t%.3lf\t%s\t%s\t%.3lf\t%.2lf\t%.2lf\t%.2lf\n",
-               chr, (positions[base+31]+positions[base+32])/2,
+               sprintf(buffer, "%d\t%.3lf\t%s\t%s\t%.3lf\t%.3lf\t%.2lf\t%.2lf\n",
+               chr, (bp[base+31]+bp[base+32])*0.0000005,
                (const char*)snpName[base+31], (const char*)snpName[base+32],
-               pi[0][2][w], LOD10, LOD3, LOD_ASP);
+               pi[2][w], pi0[w], LOD2, LOD_ASP);
             }
          }
       }
@@ -2422,7 +3302,7 @@ void Engine::NPL()
 
 void Engine::IBDSegOnly(IntArray & pairList, int segment,
    IntArray & ibdsegStorage1, IntArray & ibdsegIndex1,
-   IntArray & ibdsegStorage2, IntArray & ibdsegIndex2, bool LengthOnly, double MINSEGLENGTH, int MINCCOUNT)
+   IntArray & ibdsegStorage2, IntArray & ibdsegIndex2, bool LengthOnly, int MINSEGLENGTH, int MINCCOUNT)
 {
    double ibdprop, maxLength;
    int pairCount = pairList.Length()/2;
@@ -2485,7 +3365,7 @@ void Engine::IBDSegOnly(IntArray & pairList, int segment,
             break;   // get out of the loop only when two 0 AA x aa words in a row
       }
       if(localMin >= chrsegMax ||
-         positions[(chrsegMax<<6)|0x3F] - positions[localMin<<6] < MINSEGLENGTH)
+         bp[(chrsegMax<<6)|0x3F] - bp[localMin<<6] < MINSEGLENGTH)
          continue;// pass if the segment is shorter than 2.5MB
       if(localMin > chrsegMin){
          word = LG[0][id1][localMin-1] & LG[0][id2][localMin-1] & (LG[1][id1][localMin-1] ^ LG[1][id2][localMin-1]);
@@ -2506,7 +3386,7 @@ void Engine::IBDSegOnly(IntArray & pairList, int segment,
             break;   // get out of the loop only when two 0 AA x aa words in a row
       }
       if(localMax < localMin + 2 ||   // 1 or 2 words are not enough for an IBD segment
-         positions[(localMax<<6)|0x3F] - positions[localMin<<6] < MINSEGLENGTH)
+         bp[(localMax<<6)|0x3F] - bp[localMin<<6] < MINSEGLENGTH)
          continue;// pass if the segment is shorter than 2.5MB
       if(localMax < chrsegMax){
          word = LG[0][id1][localMax+1] & LG[0][id2][localMax+1] & (LG[1][id1][localMax+1] ^ LG[1][id2][localMax+1]);
@@ -2529,7 +3409,7 @@ void Engine::IBDSegOnly(IntArray & pairList, int segment,
          (LG[0][id1][m] | LG[1][id1][m]) & (LG[0][id2][m] | LG[1][id2][m]))) == 0; m++)
             cCount += popcount(LG[1][id1][m] & LG[1][id2][m] & (~(LG[0][id1][m]^LG[0][id2][m])));
          if( (cCount < 10) || // for sparse array
-            (cCount < 20 && positions[((m-1)<<6)|0x3F] - positions[segstart<<6] < 0.05) ) // for dense array or WGS
+            (cCount < 20 && bp[((m-1)<<6)|0x3F] - bp[segstart<<6] < 50000) ) // for dense array or WGS
             continue;
          for(word=0; (segstart >= localMin) && (word==0 || (word & (word-1)) == 0); segstart--)
             word = (((LG[0][id1][segstart] ^ LG[0][id2][segstart]) |
@@ -2569,10 +3449,10 @@ void Engine::IBDSegOnly(IntArray & pairList, int segment,
          mergedStop.Dimension(0);
          mergedBit.Dimension(0);
          for(int t = 0; t < tempcount-1; t++){
-            double gap = positions[tempStart[t+1]<<6]-positions[(tempStop[t]<<6)|0x3F];
+            int gap = bp[tempStart[t+1]<<6]-bp[(tempStop[t]<<6)|0x3F];
             if(tempStart[t+1] - tempStop[t] < 3){
                tempStart[t+1] = tempStart[t];// merge if 1 word in-between
-            }else if((gap < 2.5 && tempStart[t+1] - tempStop[t] < 20) || (gap < 0.5)){
+            }else if((gap < 2500000 && tempStart[t+1] - tempStop[t] < 20) || (gap < 0.5)){
                cCount = 0; // consistency C (AA x AA or Het x Het) count
                icCount = -2;   // inconsistency IC (AA x aa or Het x Hom) count
                for(int m = tempStop[t]+1; m < tempStart[t+1]; m++){
@@ -2582,16 +3462,16 @@ void Engine::IBDSegOnly(IntArray & pairList, int segment,
                }
                if(cCount > icCount*3) // merge if C_IBD2 >
                   tempStart[t+1] = tempStart[t];
-               else if(positions[(tempStop[t]<<6)|0x3F] - positions[tempStart[t]<<6] > MINSEGLENGTH){
+               else if(bp[(tempStop[t]<<6)|0x3F] - bp[tempStart[t]<<6] > MINSEGLENGTH){
                   mergedStart.Push(tempStart[t]);  // IBD2 segments need to be > 2.5MB
                   mergedStop.Push(tempStop[t]);
                } // else discard the left interval
-            }else if(positions[(tempStop[t]<<6)|0x3F] - positions[tempStart[t]<<6] > MINSEGLENGTH){
+            }else if(bp[(tempStop[t]<<6)|0x3F] - bp[tempStart[t]<<6] > MINSEGLENGTH){
                mergedStart.Push(tempStart[t]);  // IBD2 segments need to be > 2.5MB
                mergedStop.Push(tempStop[t]);    // No gap to consider
             } // else discard the left interval
          }
-         if(positions[(tempStop[tempcount-1]<<6)|0x3F] - positions[tempStart[tempcount-1]<<6] > MINSEGLENGTH){
+         if(bp[(tempStop[tempcount-1]<<6)|0x3F] - bp[tempStart[tempcount-1]<<6] > MINSEGLENGTH){
             mergedStart.Push(tempStart[tempcount-1]);  // IBD2 segments need to be > 2.5MB
             mergedStop.Push(tempStop[tempcount-1]);
          }
@@ -2690,7 +3570,7 @@ void Engine::IBDSegOnly(IntArray & pairList, int segment,
                (LG[0][id1][m] & LG[0][id2][m] & (LG[1][id1][m] ^ LG[1][id2][m]))==0; m++)
                cCount += popcount(LG[1][id1][m] & LG[1][id2][m] & (LG[0][id1][m] | LG[0][id2][m]));
             if( (cCount < 10) || // for sparse array
-               (cCount < 20 && positions[((m-1)<<6)|0x3F] - positions[segstart<<6] < 0.02) ) // for dense array or WGS
+               (cCount < 20 && bp[((m-1)<<6)|0x3F] - bp[segstart<<6] < 20000) ) // for dense array or WGS
                continue;
             for(segstart--; segstart >= chrsegMin &&  // icCount==0
                (LG[0][id1][segstart] & LG[0][id2][segstart] & (LG[1][id1][segstart] ^ LG[1][id2][segstart]))==0;
@@ -2704,10 +3584,10 @@ void Engine::IBDSegOnly(IntArray & pairList, int segment,
          mergedStart.Dimension(0);
          mergedStop.Dimension(0);
          for(int t = 0; t < tempcount-1; t++){
-            double gap = positions[tempStart[t+1]<<6]-positions[(tempStop[t]<<6)|0x3F];
+            int gap = bp[tempStart[t+1]<<6]-bp[(tempStop[t]<<6)|0x3F];
             if(tempStart[t+1] - tempStop[t] < 3){
                tempStart[t+1] = tempStart[t];// merge if 1 word in-between
-            }else if((gap < 2.5 && tempStart[t+1] - tempStop[t] < 20) || (gap < 0.5)){
+            }else if((gap < 2500000 && tempStart[t+1] - tempStop[t] < 20) || (gap < 500000)){
                cCount = 0; // consistency C (AA x AA or AA x Aa) count
                icCount = -2;   // inconsistency IC (AA x aa) count
                for(int m = tempStop[t]+1; m < tempStart[t+1]; m++){
@@ -2717,18 +3597,18 @@ void Engine::IBDSegOnly(IntArray & pairList, int segment,
                if(cCount > icCount*6){ // merge if C_IBD1 > 85.7%
                   tempStart[t+1] = tempStart[t];
                   cCounts[t+1] += cCounts[t] + cCount;
-               }else if((positions[(tempStop[t]<<6)|0x3F] - positions[tempStart[t]<<6] > MINSEGLENGTH)||
+               }else if((bp[(tempStop[t]<<6)|0x3F] - bp[tempStart[t]<<6] > MINSEGLENGTH)||
                   (cCounts[t] >= MINCCOUNT) ){
                   mergedStart.Push(tempStart[t]);  // IBD1 segments need to be > 2.5MB
                   mergedStop.Push(tempStop[t]);
                } // else discard the left interval
-            }else if((positions[(tempStop[t]<<6)|0x3F] - positions[tempStart[t]<<6] > MINSEGLENGTH)||
+            }else if((bp[(tempStop[t]<<6)|0x3F] - bp[tempStart[t]<<6] > MINSEGLENGTH)||
                (cCounts[t] >= MINCCOUNT) ){
                mergedStart.Push(tempStart[t]);  // IBD1 segments need to be > 2.5MB
                mergedStop.Push(tempStop[t]);    // No gap to consider
             } // else discard the left interval
          }
-         if((positions[(tempStop[tempcount-1]<<6)|0x3F] - positions[tempStart[tempcount-1]<<6] > MINSEGLENGTH) ||
+         if((bp[(tempStop[tempcount-1]<<6)|0x3F] - bp[tempStart[tempcount-1]<<6] > MINSEGLENGTH) ||
             (cCounts[tempcount-1] >= MINCCOUNT) ){
             mergedStart.Push(tempStart[tempcount-1]);  // IBD1 segments need to be > 2.5MB
             mergedStop.Push(tempStop[tempcount-1]);
@@ -2771,12 +3651,12 @@ void Engine::IBDSegOnly(IntArray & pairList, int segment,
                      localMax = markerCount - 1;
                   else
                      localMax = ((stopPos[k][s]<<6)|0x3F)+stopExtraBit[k][s];
-                  length += positions[localMax] - positions[localMin];
+                  length += bp[localMax] - bp[localMin];
                }
                if(k==0)
-                  ibdsegStorage1[pair] = int(length*1000000+0.5);
+                  ibdsegStorage1[pair] = int(length+0.5);
                else
-                  ibdsegStorage2[pair] = int(length*1000000+0.5);
+                  ibdsegStorage2[pair] = int(length+0.5);
             }else // Detailed segments to be returned
                for(int s = 0; s < newsegCount; s++){
                   localMin = (startPos[k][s]<<6)-startExtraBit[k][s];

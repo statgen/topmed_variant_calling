@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
 // rohmapping.cpp
-// (c) 2010-2018 Wei-Min Chen
+// (c) 2010-2019 Wei-Min Chen
 //
 // This file is distributed as part of the KING source code package
 // and may not be redistributed in any form, without prior written
@@ -12,7 +12,7 @@
 //
 // All computer programs have bugs. Use this file at your own risk.
 //
-// April 27, 2018
+// Feb 22, 2019
 
 #include <math.h>
 #include <time.h>
@@ -42,7 +42,7 @@ void Engine::HomozygosityMappingForQTMH(const char *popName)
 
    const double MINLOD=1.0;
    const int MINROHCOUNT=5;
-   const double MAXROHLENGTH=10.0;
+   const int MAXROHLENGTH=10000000;
    bool IBDvalidFlag = PreSegment();
    if(!IBDvalidFlag){
       printf("%s\n", (const char*)segmessage);
@@ -328,7 +328,7 @@ void Engine::HomozygosityMappingForQTMH(const char *popName)
          for(int i = 0; i < rohsegCount; i++){
             int startPos = rohStorage[i*2];
             int stopPos = rohStorage[i*2+1];
-            if(positions[stopPos] - positions[startPos] > MAXROHLENGTH) continue;
+            if(bp[stopPos] - bp[startPos] > MAXROHLENGTH) continue;
             int w = (startPos>>6)-chrsegMin;
             int offset = startPos&0x3F;
             if(w >= 0 && offset)
@@ -564,7 +564,7 @@ void Engine::HomozygosityMappingForQTMH(const char *popName)
             double LOD = diff * diff / var * LODfactor;
             if(diff < 0) LOD = -LOD;
             pbuffer += sprintf(&buffer[pbuffer], "%d\t%.3lf\t%s\t%s\t%s",
-               chr, pos1==pos2? positions[pos1]:(positions[pos1]+positions[pos2])/2,
+               chr, (pos1==pos2? bp[pos1]:(bp[pos1]+bp[pos2])/2)*0.000001,
                (const char*)snpName[pos1], (const char*)snpName[pos2],
                (const char*)traitNames[trait]);
             for(int pop = 0; pop < popCount; pop++)
@@ -776,7 +776,7 @@ void Engine::HomozygosityMappingMH(const char *popName)
             for(int i = 0; i < rohsegCount; i++){
                int startPos = rohStorage[i*2];
                int stopPos = rohStorage[i*2+1];
-               if(positions[stopPos] - positions[startPos] > MAXROHLENGTH) continue;
+               if(bp[stopPos] - bp[startPos] > MAXROHLENGTH) continue;
                int w = (startPos>>6)-chrsegMin;
                int offset = startPos&0x3F;
                if(w >= 0 && offset)
@@ -888,7 +888,7 @@ void Engine::HomozygosityMappingMH(const char *popName)
                localOR[bit] /= localORdeno[bit];
                if(localOR[bit] < 1) localLOD[bit] = -localLOD[bit];
                fprintf(fp, "%d\t%.3lf\t%s\t%s",
-                  chr, positions[basePos+bit],
+                  chr, bp[basePos+bit]*0.000001,
                   (const char*)snpName[basePos+bit],
                   (const char*)snpName[basePos+bit]);
                for(int p = 0; p < validpopCount; p++)
@@ -903,7 +903,7 @@ void Engine::HomozygosityMappingMH(const char *popName)
          }else{
             if(OR[w] < 1) LOD[w] = -LOD[w];
             fprintf(fp, "%d\t%.3lf\t%s\t%s",
-               chr, (positions[basePos+31]+positions[basePos+32])/2,
+               chr, (bp[basePos+31]+bp[basePos+32])*0.0000005,
                (const char*)snpName[basePos+31], (const char*)snpName[basePos+32]);
             for(int p = 0; p < validpopCount; p++)
                   if(eachOR[validpop[p]][w] == _NAN_)
@@ -950,7 +950,7 @@ void Engine::HomozygosityMapping()
    printf("\n");
 
    const int MINMARGINCOUNT = 10;
-   const double MAXROHLENGTH = 10.0;
+   const int MAXROHLENGTH = 10000000;
    bool IBDvalidFlag = PreSegment();
    if(!IBDvalidFlag){
       printf("%s\n", (const char*)segmessage);
@@ -1024,7 +1024,7 @@ void Engine::HomozygosityMapping()
          for(int i = 0; i < rohsegCount; i++){
             int startPos = rohStorage[i*2];
             int stopPos = rohStorage[i*2+1];
-            double length = positions[stopPos] - positions[startPos];
+            int length = bp[stopPos] - bp[startPos];
             if(length > MAXROHLENGTH) continue;
             int w = (startPos>>6)-chrsegMin;
             int offset = startPos&0x3F;
@@ -1108,14 +1108,14 @@ void Engine::HomozygosityMapping()
                double localLOD = temp*temp*n*1.0/n1/n2/m1/m2*LODfactor;
                if(localOR < 1) localLOD = -localLOD;
                fprintf(fp, "%d\t%.3lf\t%s\t%s\t%d\t%d\t%d\t%d\t%.3lf\t%.3lf\t%.2lf\n",
-                  chr, positions[basePos+bit],
+                  chr, bp[basePos+bit]*0.000001,
                   (const char*)snpName[basePos+bit], (const char*)snpName[basePos+bit],
                   affCount[0], b, affCount[1], a, localOR, localse, localLOD);
             }
          }else{
             if(OR[w] < 1) LOD[w] = -LOD[w];
             fprintf(fp, "%d\t%.3lf\t%s\t%s\t%d\t%d\t%d\t%d\t%.3lf\t%.3lf\t%.2lf\n",
-               chr, (positions[basePos+31]+positions[basePos+32])/2,
+               chr, (bp[basePos+31]+bp[basePos+32])*0.0000005,
                (const char*)snpName[basePos+31], (const char*)snpName[basePos+32],
                affCount[0], pi[0][w]+extraPi[0][w], affCount[1],
                pi[1][w]+extraPi[1][w], OR[w], se[w], LOD[w]);
@@ -1362,7 +1362,7 @@ void Engine::HomozygosityMappingForQT()
       for(int i = 0; i < rohsegCount; i++){
          int startPos = rohStorage[i*2];
          int stopPos = rohStorage[i*2+1];
-         if(positions[stopPos] - positions[startPos] > MAXROHLENGTH) continue;
+         if(bp[stopPos] - bp[startPos] > MAXROHLENGTH) continue;
          int w = (startPos>>6)-chrsegMin;
          int offset = startPos&0x3F;
          if(w >= 0 && offset)
@@ -1540,7 +1540,7 @@ void Engine::HomozygosityMappingForQT()
             double LOD = diff * diff / var * LODfactor;
             if(diff < 0) LOD = -LOD;
             pbuffer += sprintf(&buffer[pbuffer], "%d\t%.3lf\t%s\t%s\t%s\t%d\t%d\t%.3lf\t%.3lf\t%.3lf\t%.3lf\t%.2lf\n",
-               chr, pos1==pos2? positions[pos1]:(positions[pos1]+positions[pos2])/2,
+               chr, (pos1==pos2? bp[pos1]:(bp[pos1]+bp[pos2])/2)*0.000001,
                (const char*)snpName[pos1], (const char*)snpName[pos2],
                (const char*)traitNames[trait], localROH, traitCounts[trait],
                localR, traitMean[trait], diff, sqrt(var), LOD);
@@ -1672,13 +1672,13 @@ void Engine::PopulationROH()
          for(int i = 0; i < tempcount; i++){
             int startPos = rohStorage[i*2];
             int stopPos = rohStorage[i*2+1];
-            double length = positions[stopPos] - positions[startPos];
+            int length = bp[stopPos] - bp[startPos];
             int id = rohIndex[i];
             FROH[pop][id] += length;
-            if(length > 10){
+            if(length > 10000000){
                FROH10[pop][id] += length;
                FROH25[pop][id] += length;
-            }else if(length > 2.5)
+            }else if(length > 2500000)
                FROH25[pop][id] += length;
             int startword = ((startPos-1)>>6)+1;
             int stopword = ((stopPos+1)>>6)-1;
@@ -1696,7 +1696,7 @@ void Engine::PopulationROH()
       for(int w = 0; w < ndim; w++){
          int base = ((w+chrsegMin)<<6);
          sprintf(buffer, "%d\t%.3lf\t%s\t%s",
-            chr, (positions[base+31]+positions[base+32])/2,
+            chr, (bp[base+31]+bp[base+32])*0.0000005,
             (const char*)snpName[base+31], (const char*)snpName[base+32]);
          fprintf(fp, "%s", buffer);
          for(int pop = 0; pop < popCount; pop++)
@@ -1779,7 +1779,7 @@ void Engine::ROHOnly(IntArray & idList, int segment, IntArray & rohStorage, IntA
             ((~LG[0][id][m]) & LG[1][id][m])==0; m++)
             cCount += popcount(LG[0][id][m] & LG[1][id][m]);
          if( (cCount < 5) || // for sparse array
-            (cCount < 10 && positions[((m-1)<<6)|0x3F] - positions[segstart<<6] < 0.02) ) // for dense array or WGS
+            (cCount < 10 && bp[((m-1)<<6)|0x3F] - bp[segstart<<6] < 20000) ) // for dense array or WGS
             continue;// continue only when cCount>=10 AND > 20Kb
          for(segstart--; segstart >= chrsegMin &&  // icCount==0
             ((~LG[0][id][segstart]) & LG[1][id][segstart])==0; segstart--);
@@ -1792,10 +1792,10 @@ void Engine::ROHOnly(IntArray & idList, int segment, IntArray & rohStorage, IntA
       mergedStart.Dimension(0);
       mergedStop.Dimension(0);
       for(int t = 0; t < tempcount-1; t++){
-         double gap = positions[tempStart[t+1]<<6]-positions[(tempStop[t]<<6)|0x3F];
+         int gap = bp[tempStart[t+1]<<6]-bp[(tempStop[t]<<6)|0x3F];
          if(tempStart[t+1] - tempStop[t] < 3){
             tempStart[t+1] = tempStart[t];// merge if 1 word in-between
-         }else if((gap < 5.0 && tempStart[t+1] - tempStop[t] < 100) || (gap < 1.0)){
+         }else if((gap < 5000000 && tempStart[t+1] - tempStop[t] < 100) || (gap < 1.0)){
             cCount = 0; // consistency C (AA) count
             icCount = -2;   // inconsistency IC (Aa) count
             for(int m = tempStop[t]+1; m < tempStart[t+1]; m++){
@@ -1805,18 +1805,18 @@ void Engine::ROHOnly(IntArray & idList, int segment, IntArray & rohStorage, IntA
             if(cCount > icCount*3){ // merge if C_roh > 75%
                tempStart[t+1] = tempStart[t];
                cCounts[t+1] += cCounts[t] + cCount;
-            }else if((positions[(tempStop[t]<<6)|0x3F] - positions[tempStart[t]<<6] > 2.5) ||
+            }else if((bp[(tempStop[t]<<6)|0x3F] - bp[tempStart[t]<<6] > 2500000) ||
                (cCounts[t] >= MINCCOUNT) ){
                mergedStart.Push(tempStart[t]);  // ROH segments need to be > 2.5MB
                mergedStop.Push(tempStop[t]);
             } // else discard the left interval
-         }else if((positions[(tempStop[t]<<6)|0x3F] - positions[tempStart[t]<<6] > 2.5) ||
+         }else if((bp[(tempStop[t]<<6)|0x3F] - bp[tempStart[t]<<6] > 2500000) ||
             (cCounts[t] >= MINCCOUNT) ){
             mergedStart.Push(tempStart[t]);  // ROH segments need to be > 2.5MB
             mergedStop.Push(tempStop[t]);    // No gap to consider
          } // else discard the left interval
       }
-      if((positions[(tempStop[tempcount-1]<<6)|0x3F] - positions[tempStart[tempcount-1]<<6] > 2.5) ||
+      if((bp[(tempStop[tempcount-1]<<6)|0x3F] - bp[tempStart[tempcount-1]<<6] > 2500000) ||
          (cCounts[tempcount-1] >= MINCCOUNT) ){
          mergedStart.Push(tempStart[tempcount-1]);  // ROH segments need to be > 2.5MB
          mergedStop.Push(tempStop[tempcount-1]);

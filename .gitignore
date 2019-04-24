@@ -39,3 +39,8 @@ bcftools/bcftools
 cramore/cramore
 vt-topmed/vt
 king/king
+king/*.o
+*.o
+libsvm/svm-train
+libsvm/svm-predict
+libsvm/svm-scale

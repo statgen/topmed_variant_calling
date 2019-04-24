@@ -32,8 +32,8 @@ void Engine::Haplotyping(bool SaveFlag)
    if(rareMAF!=_NAN_) myMAF = rareMAF;
    for(int m = 0; m < markerCount; m++){
       if(chrList.Length() && chrList.Find(chromosomes[m])==-1) continue;
-      if(start != _NAN_ && positions[m] < start) continue;
-      if(stop != _NAN_ && positions[m] > stop) continue;
+      if(start != _NAN_ && bp[m] < start) continue;
+      if(stop != _NAN_ && bp[m] > stop) continue;
 
       b = m/16;
       int j = m%16;

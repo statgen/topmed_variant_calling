@@ -12,7 +12,7 @@
 //
 // All computer programs have bugs. Use this file at your own risk.
 //
-// August 23, 2018
+// Nov 21, 2018
 
 #include <math.h>
 #include "analysis.h"
@@ -35,20 +35,13 @@
 #define OACOL 6
 #define ONCOL 7
 
-double Engine::ComputeAUC(Vector & risks, IntArray & diseaseStatus, int printFlag, int TOTALCUT=100000)
+double Engine::ComputeAUC(Vector & risks, IntArray & diseaseStatus, int printFlag)
 {
-   double *cutoff = new double[TOTALCUT];
-   double *sensitivity = new double[TOTALCUT];
-   double *specificity = new double[TOTALCUT];
-   double *PPV = new double[TOTALCUT];
-   double *NPV = new double[TOTALCUT];
-   int *Pcount[2], *Ncount[2];
-   for(int i = 0; i < 2; i++){
-      Pcount[i] = new int[TOTALCUT];
-      Ncount[i] = new int[TOTALCUT];
-   }
-   for(int t = 0; t < TOTALCUT; t++)
-      Pcount[0][t] = Pcount[1][t] = Ncount[0][t] = Ncount[1][t] = 0;
+   const int TOTALCUT=100000;
+   double sensitivity[TOTALCUT], specificity[TOTALCUT];
+   int Pcount[2][TOTALCUT], Ncount[2][TOTALCUT];
+   for(int t = 0; t < TOTALCUT; t++)
+      Pcount[0][t] = Pcount[1][t] = Ncount[0][t] = Ncount[1][t] = 0;
    Vector temprisk[2];
    for(int a = 0; a < 2; a++)
       temprisk[a].Dimension(0);
@@ -83,18 +76,6 @@
       sensitivity[t] = (Ncount[1][t] + Pcount[1][t])? 1.0 * Pcount[1][t] / (Ncount[1][t] + Pcount[1][t]): 1;
    }
    if(printFlag){
-      if(prevalence != _NAN_)
-         for(int t = 0; t < TOTALCUT; t++){
-            if(sensitivity[t] == 0 && specificity[t]==1)
-               PPV[t] = 0;
-            else
-               PPV[t] = prevalence * sensitivity[t] / (prevalence * sensitivity[t] + (1-prevalence)*(1-specificity[t]));
-            if(sensitivity[t] == 1 && specificity[t] == 0)
-               NPV[t] = 0;
-            else
-               NPV[t] = (1-prevalence)*specificity[t] / ((1-prevalence)*specificity[t] + prevalence * (1-sensitivity[t]));
-         }
-
       double tempT[]={0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.999};
       int indexcount = 8;
       IntArray index(0);
@@ -124,28 +105,29 @@
       printf("\n");
       if(prevalence != _NAN_){
          printf("Positive PV");
-         for(int i = 0; i < indexcount; i++) printf("\t%.4lf", PPV[index[i]]);
+         for(int i = 0; i < indexcount; i++) {
+            int t = index[i];
+            double PPV = prevalence * sensitivity[t] / (prevalence * sensitivity[t] + (1-prevalence)*(1-specificity[t]));
+            printf("\t%.4lf", PPV);
+         }
          printf("\n");
          printf("Negative PV");
-         for(int i = 0; i < indexcount; i++) printf("\t%.4lf", NPV[index[i]]);
+         for(int i = 0; i < indexcount; i++) {
+            int t = index[i];
+            double NPV = (1-prevalence)*specificity[t] / ((1-prevalence)*specificity[t] + prevalence * (1-sensitivity[t]));
+            printf("\t%.4lf", NPV);
+         }
          printf("\n");
       }
       printf("\n");
    }
-   double AUC = sensitivity[0] * (1-specificity[0])*0.5;
-   for(int i = 1; i < TOTALCUT; i++)
-      AUC += (specificity[i-1] - specificity[i]) * (sensitivity[i-1]+sensitivity[i])/2;
-   delete []sensitivity;
-   delete []specificity;
-   delete []PPV;
-   delete []NPV;
-   for(int i = 0; i < 2; i++){
-      delete []Pcount[i];
-      delete []Ncount[i];
-   }
+   double AUC = (1-specificity[1])*sensitivity[0];
+   for(int i = 1; i < TOTALCUT-1; i++)
+      AUC += (specificity[i-1] - specificity[i+1])*sensitivity[i];
+   AUC += (specificity[TOTALCUT-2] - specificity[TOTALCUT-1])*sensitivity[TOTALCUT-1];
+   AUC *= 0.5;
    return AUC;
 }
-
 
 void Engine::PrintGeneticRiskScoreSNPMajor(const char* weightfile, bool noflipFlag)
 {
@@ -405,7 +387,7 @@ void Engine::PrintGeneticRiskScoreSNPMajor(const char* weightfile, bool noflipFl
       IntArray diseaseStatus(idCount);
       for(int i = 0; i < idCount; i++)
          diseaseStatus[i] = ped[phenoid[i]].affections[0]-1;
-      printf("Using estimated pencentiles as cutoff values:\n");
+      printf("Using estimated percentiles as cutoff values:\n");
       double AUC = ComputeAUC(pvalues, diseaseStatus, 2);
       printf("AUC (Area under the ROC curve) = %.4lf\n", AUC);
       printf("\nUsing scaled-GRS as cutoff values:\n");
@@ -665,4 +647,8 @@ void Engine::PrintGeneticRiskScore(const char* weightfile)
       }
    }
    */
+//   double AUC = sensitivity[0] * (1-specificity[0])*0.5;
+//   for(int i = 1; i < TOTALCUT; i++)
+//      AUC += (specificity[i-1] - specificity[i]) * (sensitivity[i-1]+sensitivity[i])/2;
+
 

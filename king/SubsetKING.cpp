@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////
 // SubsetKING.cpp
-// (c) 2010-2018 Wei-Min Chen
+// (c) 2010-2019 Wei-Min Chen
 //
 // This file is distributed as part of the KING source code package
 // and may not be redistributed in any form, without prior written
@@ -12,7 +12,7 @@
 //
 // All computer programs have bugs. Use this file at your own risk.
 //
-// June 3, 2018
+// Feb 22, 2019
 
 #include <math.h>
 #include "analysis.h"
@@ -20,7 +20,55 @@
   #include <omp.h>
 #endif
 
-void Engine::IBDSegInSubset64Bit(IntArray & pairList, Vector & ibdprops, Vector & maxLengths, Vector & ibd2props, Vector & maxLengths2)
+void Engine::DuplicateInSubset64Bit(IntArray & pairList, IntArray & HetHetCounts,
+   IntArray & DiffHomCounts, IntArray & HomHomCounts, IntArray & notMissingHetCounts)
+{
+   int pairCount = pairList.Length()/2;
+   if(pairCount==0) return;
+   HetHetCounts.Dimension(pairCount);
+   DiffHomCounts.Dimension(pairCount);
+   HomHomCounts.Dimension(pairCount);
+   notMissingHetCounts.Dimension(pairCount);
+   int HetHetCount, DiffHomCount, m1;
+   unsigned long long int word, word1, word2;
+#ifdef _OPENMP
+   #pragma omp parallel for num_threads(defaultMaxCoreCount) \
+      private(HetHetCount, DiffHomCount, m1, word, word1, word2)
+#endif
+   for(int p = 0; p < pairCount; p++){
+      int id1 = pairList[p*2];
+      int id2 = pairList[p*2+1];
+      for(word1=word2=HetHetCount=DiffHomCount=m1=0; m1 < longCount; m1++){
+         word = (LG[0][id1][m1] | LG[1][id1][m1]) &   // HetNomiss
+            (LG[0][id2][m1] | LG[1][id2][m1]) & ~(LG[0][id1][m1] & LG[0][id2][m1]);
+         word = word - ((word>>1)&0x5555555555555555);
+         word = (word&0x3333333333333333) + ((word>>2)&0x3333333333333333);
+         word = (word+(word>>4)) & 0x0F0F0F0F0F0F0F0F;
+         word = (word+(word>>8)) & 0x00FF00FF00FF00FF;
+         word1 += (word+(word>>16)) & 0x0000FFFF0000FFFF;
+         word = LG[0][id1][m1] & LG[0][id2][m1];   // HomHom
+         word = word - ((word>>1)&0x5555555555555555);
+         word = (word&0x3333333333333333) + ((word>>2)&0x3333333333333333);
+         word = (word + (word>>4)) & 0x0F0F0F0F0F0F0F0F;
+         word = (word + (word>>8)) & 0x00FF00FF00FF00FF;
+         word2 += (word + (word>>16)) & 0x0000FFFF0000FFFF;
+         for(word = (~LG[0][id1][m1] & LG[1][id1][m1] & LG[0][id2][m1]) |  // HetHom
+            (~LG[0][id2][m1] & LG[1][id2][m1] & LG[0][id1][m1]);  // HomHet
+            word; word &= (word-1), HetHetCount++);
+         for(word = LG[0][id1][m1] & LG[0][id2][m1] & (LG[1][id1][m1] ^ LG[1][id2][m1]);
+            word; word &= (word-1), DiffHomCount++);  // IBS0
+      }
+      int notMissingHetCount = (word1+(word1>>32)) & 0xFFFFFFFF;
+      int HomHomCount = (word2 + (word2>>32)) & 0xFFFFFFFF;
+      HetHetCount = notMissingHetCount - HetHetCount;
+      HetHetCounts[p] = HetHetCount;
+      HomHomCounts[p] = HomHomCount;
+      DiffHomCounts[p] = DiffHomCount;
+      notMissingHetCounts[p] = notMissingHetCount;
+   }  // end of p loop for pairs
+}
+
+void Engine::IBDSegInSubset64Bit(IntArray & pairList, Vector & ibdprops, Vector & maxLengths, Vector & ibd2props, Vector & maxLengths2, IntArray *ibd1segs, IntArray *ibd2segs)
 {
    double ibdprop, maxLength;
    int segCount = (chrSeg.Length()>>2);
@@ -68,8 +116,7 @@ void Engine::IBDSegInSubset64Bit(IntArray & pairList, Vector & ibdprops, Vector 
                (LG[1][id1][localMin+1] ^ LG[1][id2][localMin+1]))==0)
                break;   // get out of the loop only when two 0 AA x aa words in a row
          }
-         if(localMin >= chrsegMax ||
-            positions[(chrsegMax<<6)|0x3F] - positions[localMin<<6] < 2.5)
+         if(localMin >= chrsegMax || bp[(chrsegMax<<6)|0x3F] - bp[localMin<<6] < 2500000)
             continue;// pass if the segment is shorter than 2.5MB
          if(localMin > chrsegMin){
             word = LG[0][id1][localMin-1] & LG[0][id2][localMin-1] & (LG[1][id1][localMin-1] ^ LG[1][id2][localMin-1]);
@@ -90,7 +137,7 @@ void Engine::IBDSegInSubset64Bit(IntArray & pairList, Vector & ibdprops, Vector 
                break;   // get out of the loop only when two 0 AA x aa words in a row
          }
          if(localMax < localMin + 2 ||   // 1 or 2 words are not enough for an IBD segment
-            positions[(localMax<<6)|0x3F] - positions[localMin<<6] < 2.5)
+            bp[(localMax<<6)|0x3F] - bp[localMin<<6] < 2500000)
             continue;// pass if the segment is shorter than 2.5MB
          if(localMax < chrsegMax){
             word = LG[0][id1][localMax+1] & LG[0][id2][localMax+1] & (LG[1][id1][localMax+1] ^ LG[1][id2][localMax+1]);
@@ -112,7 +159,7 @@ void Engine::IBDSegInSubset64Bit(IntArray & pairList, Vector & ibdprops, Vector 
             ((((LG[0][id1][m] ^ LG[0][id2][m]) | (LG[1][id1][m] ^ LG[1][id2][m])) &
             (LG[0][id1][m] | LG[1][id1][m]) & (LG[0][id2][m] | LG[1][id2][m]))) == 0; m++)
                cCount += popcount(LG[1][id1][m] & LG[1][id2][m] & (~(LG[0][id1][m]^LG[0][id2][m])));
-            if(cCount < 10 || positions[((m-1)<<6)|0x3F] - positions[segstart<<6] < 0.1)
+            if(cCount < 10 || bp[((m-1)<<6)|0x3F] - bp[segstart<<6] < 100000)
                continue;   // continue only when cCount>=10 AND >0.2Mb
             for(word=0; (segstart >= localMin) && (word==0 || (word & (word-1)) == 0); segstart--)
                word = (((LG[0][id1][segstart] ^ LG[0][id2][segstart]) |
@@ -151,10 +198,10 @@ void Engine::IBDSegInSubset64Bit(IntArray & pairList, Vector & ibdprops, Vector 
             mergedStop.Dimension(0);
             mergedBit.Dimension(0);
             for(int t = 0; t < tempcount-1; t++){
-               double gap = positions[tempStart[t+1]<<6]-positions[(tempStop[t]<<6)|0x3F];
+               int gap = bp[tempStart[t+1]<<6]-bp[(tempStop[t]<<6)|0x3F];
                if(tempStart[t+1] - tempStop[t] < 3){
                   tempStart[t+1] = tempStart[t];// merge if 1 word in-between
-               }else if(gap < 5.0 && tempStart[t+1] - tempStop[t] < 100){
+               }else if(gap < 5000000 && tempStart[t+1] - tempStop[t] < 100){
                   cCount = 0; // consistency C (AA x AA or AA x Aa) count
                   icCount = -2;   // inconsistency IC (AA x aa) count
                   for(int m = tempStop[t]+1; m < tempStart[t+1]; m++){
@@ -162,18 +209,18 @@ void Engine::IBDSegInSubset64Bit(IntArray & pairList, Vector & ibdprops, Vector 
                         (LG[0][id1][m] | LG[1][id1][m]) & (LG[0][id2][m] | LG[1][id2][m])));
                      cCount += popcount(LG[1][id1][m] & LG[1][id2][m] & (~(LG[0][id1][m]^LG[0][id2][m])));
                   }
-                  if(cCount > icCount*3) // merge if C_IBD2 > 
+                  if(cCount > icCount*3) // merge if C_IBD2 >
                      tempStart[t+1] = tempStart[t];
-                  else if(positions[(tempStop[t]<<6)|0x3F] - positions[tempStart[t]<<6] >= 2.5){
+                  else if(bp[(tempStop[t]<<6)|0x3F] - bp[tempStart[t]<<6] >= 2500000){
                      mergedStart.Push(tempStart[t]);  // IBD2 segments need to be > 2.5MB
                      mergedStop.Push(tempStop[t]);
                   } // else discard the left interval
-               }else if(positions[(tempStop[t]<<6)|0x3F] - positions[tempStart[t]<<6] >= 2.5){
+               }else if(bp[(tempStop[t]<<6)|0x3F] - bp[tempStart[t]<<6] >= 2500000){
                   mergedStart.Push(tempStart[t]);  // IBD2 segments need to be > 2.5MB
                   mergedStop.Push(tempStop[t]);    // No gap to consider
                } // else discard the left interval
             }
-            if(positions[(tempStop[tempcount-1]<<6)|0x3F] - positions[tempStart[tempcount-1]<<6] >= 2.5){
+            if(bp[(tempStop[tempcount-1]<<6)|0x3F] - bp[tempStart[tempcount-1]<<6] >= 2500000){
                mergedStart.Push(tempStart[tempcount-1]);  // IBD2 segments need to be > 2.5MB
                mergedStop.Push(tempStop[tempcount-1]);
             }
@@ -270,7 +317,7 @@ void Engine::IBDSegInSubset64Bit(IntArray & pairList, Vector & ibdprops, Vector 
                for(cCount = 0, segstart = m; m <= chrsegMax &&
                   (LG[0][id1][m] & LG[0][id2][m] & (LG[1][id1][m] ^ LG[1][id2][m]))==0; m++)
                   cCount += popcount(LG[1][id1][m] & LG[1][id2][m] & (LG[0][id1][m] | LG[0][id2][m]));
-               if(cCount < 10 || positions[((m-1)<<6)|0x3F] - positions[segstart<<6] < 0.2)
+               if(cCount < 10 || bp[((m-1)<<6)|0x3F] - bp[segstart<<6] < 200000)
                   continue;   // continue only when cCount>=10 AND >0.2Mb
                for(segstart--; segstart >= chrsegMin &&  // icCount==0
                   (LG[0][id1][segstart] & LG[0][id2][segstart] & (LG[1][id1][segstart] ^ LG[1][id2][segstart]))==0;
@@ -283,10 +330,10 @@ void Engine::IBDSegInSubset64Bit(IntArray & pairList, Vector & ibdprops, Vector 
             mergedStart.Dimension(0);
             mergedStop.Dimension(0);
             for(int t = 0; t < tempcount-1; t++){
-               double gap = positions[tempStart[t+1]<<6]-positions[(tempStop[t]<<6)|0x3F];
+               int gap = bp[tempStart[t+1]<<6]-bp[(tempStop[t]<<6)|0x3F];
                if(tempStart[t+1] - tempStop[t] < 3){
                   tempStart[t+1] = tempStart[t];// merge if 1 word in-between
-               }else if(gap < 5.0 && tempStart[t+1] - tempStop[t] < 100){
+               }else if(gap < 5000000 && tempStart[t+1] - tempStop[t] < 100){
                   cCount = 0; // consistency C (AA x AA or AA x Aa) count
                   icCount = -2;   // inconsistency IC (AA x aa) count
                   for(int m = tempStop[t]+1; m < tempStart[t+1]; m++){
@@ -295,16 +342,16 @@ void Engine::IBDSegInSubset64Bit(IntArray & pairList, Vector & ibdprops, Vector 
                   }
                   if(cCount > icCount*6) // merge if C_IBD1 > 85.7%
                      tempStart[t+1] = tempStart[t];
-                  else if(positions[(tempStop[t]<<6)|0x3F] - positions[tempStart[t]<<6] > 2.5){
+                  else if(bp[(tempStop[t]<<6)|0x3F] - bp[tempStart[t]<<6] > 2500000){
                      mergedStart.Push(tempStart[t]);  // IBD1 segments need to be > 2.5MB
                      mergedStop.Push(tempStop[t]);
                   } // else discard the left interval
-               }else if(positions[(tempStop[t]<<6)|0x3F] - positions[tempStart[t]<<6] > 2.5){
+               }else if(bp[(tempStop[t]<<6)|0x3F] - bp[tempStart[t]<<6] > 2500000){
                   mergedStart.Push(tempStart[t]);  // IBD1 segments need to be > 2.5MB
                   mergedStop.Push(tempStop[t]);    // No gap to consider
                } // else discard the left interval
             }
-            if(positions[(tempStop[tempcount-1]<<6)|0x3F] - positions[tempStart[tempcount-1]<<6] > 2.5){
+            if(bp[(tempStop[tempcount-1]<<6)|0x3F] - bp[tempStart[tempcount-1]<<6] > 2500000){
                mergedStart.Push(tempStart[tempcount-1]);  // IBD1 segments need to be > 2.5MB
                mergedStop.Push(tempStop[tempcount-1]);
             }
@@ -349,10 +396,17 @@ void Engine::IBDSegInSubset64Bit(IntArray & pairList, Vector & ibdprops, Vector 
                   localMax = markerCount - 1;
                else
                   localMax = ((stopPos[k][seg]<<6)|0x3F)+stopExtraBit[k][seg];
-               length = positions[localMax] - positions[localMin];
-               if(length > 2.5) ibdprop += length;
+               length = bp[localMax] - bp[localMin];
+               if(length > 2500000) ibdprop += length;
                if(length > localmaxLength)
                   localmaxLength = length;
+               if(ibd1segs && k==0){// IBD1
+                  ibd1segs[p].Push(localMin);
+                  ibd1segs[p].Push(localMax);
+               }else if(ibd2segs && k==1){// IBD2
+                  ibd2segs[p].Push(localMin);
+                  ibd2segs[p].Push(localMax);
+               }
             }
             ibdprop /= totalLength;
          }
@@ -653,22 +707,22 @@ void Engine::IBD2SegInSubset64Bit(IntArray & pairList, Vector & ibd2props, Vecto
          double length;
          for(int seg = 0; seg < newsegCount; seg++){
             if(seg+1 < newsegCount && // two IBD2 Segments can be merged
-               positions[startPos[seg+1]<<6]-positions[(stopPos[seg]<<6)|0x3F]<1.0 &&
-               (positions[(stopPos[seg]<<6)|0x3F] - positions[stopPos[seg]<<6] > 1.0) &&
-               (positions[(stopPos[seg+1]<<6)|0x3F] - positions[stopPos[seg+1]<<6] > 1.0) &&
+               bp[startPos[seg+1]<<6]-bp[(stopPos[seg]<<6)|0x3F]<1000000 &&
+               (bp[(stopPos[seg]<<6)|0x3F] - bp[stopPos[seg]<<6] > 1000000) &&
+               (bp[(stopPos[seg+1]<<6)|0x3F] - bp[stopPos[seg+1]<<6] > 1000000) &&
                chromosomes[startPos[seg+1]<<6] == chromosomes[(stopPos[seg]<<6)|0x3F]){
                startPos[seg+1] = startPos[seg];
                continue;
             }
             if(stopPos[seg] == longCount-1)
-               length = positions[markerCount-1] - positions[startPos[seg]<<6];
+               length = bp[markerCount-1] - bp[startPos[seg]<<6];
             else
-               length = positions[(stopPos[seg]<<6)|0x3F] - positions[startPos[seg]<<6];
+               length = bp[(stopPos[seg]<<6)|0x3F] - bp[startPos[seg]<<6];
             ibd2prop += length;
             if(length > maxLength)
                maxLength = length;
          }
-         if(maxLength < 10) ibd2prop=0.0;
+         if(maxLength < 10000000) ibd2prop=0.0;
          else
             ibd2prop /= totalLength;
       }
@@ -681,7 +735,7 @@ void Engine::IBD2SegInSubset64Bit(IntArray & pairList, Vector & ibd2props, Vecto
 }
 
 void Engine::KinshipInSubset(IntArray & pairList, IntArray & HetHetCounts,
-   IntArray & IBS0Counts, IntArray & het1Counts, IntArray & het2Counts, IntArray & HomHomCounts)
+   IntArray & IBS0Counts, IntArray & het1Counts, IntArray & het2Counts, IntArray & HomHomCounts, IntArray & IBSCounts)
 {
    int pairCount = pairList.Length()/2;
    if(pairCount==0) return;
@@ -699,18 +753,21 @@ void Engine::KinshipInSubset(IntArray & pairList, IntArray & HetHetCounts,
    het2Counts.Zero();
    HomHomCounts.Dimension(pairCount);
    HomHomCounts.Zero();
+   IBSCounts.Dimension(pairCount);
+   IBSCounts.Zero();
    const int BLOCKSIZE=64;   // cache blocking size for individual pairs
    const int CACHESIZE=1024;  // cache blocking size for SNP words
-   int HetHetCount[BLOCKSIZE], IBS0Count[BLOCKSIZE], het1Count[BLOCKSIZE], het2Count[BLOCKSIZE], HomHomCount[BLOCKSIZE];
+   int HetHetCount[BLOCKSIZE], IBS0Count[BLOCKSIZE], het1Count[BLOCKSIZE],
+      het2Count[BLOCKSIZE], HomHomCount[BLOCKSIZE], IBSCount[BLOCKSIZE];
 #ifdef _OPENMP
    #pragma omp parallel for num_threads(defaultMaxCoreCount) \
-   private(HetHetCount, IBS0Count, het1Count, het2Count, HomHomCount, id1, id2)
+   private(HetHetCount, IBS0Count, het1Count, het2Count, HomHomCount, IBSCount, id1, id2)
 #endif
    for(int blockp = 0; blockp < pairCount; blockp += BLOCKSIZE){
       int pMax = blockp > pairCount-BLOCKSIZE? pairCount: blockp+BLOCKSIZE;
       for(int p = blockp; p < pMax; p++){
          int pp = p - blockp;
-         HetHetCount[pp] = IBS0Count[pp] = het1Count[pp] = het2Count[pp] = HomHomCount[pp] = 0;
+         HetHetCount[pp] = IBS0Count[pp] = het1Count[pp] = het2Count[pp] = HomHomCount[pp] = IBSCount[pp] = 0;
       }
       for(int blockm = 0; blockm < shortCount; blockm += CACHESIZE){
          int mMax = (blockm > shortCount-CACHESIZE) ? shortCount: blockm+CACHESIZE;
@@ -724,6 +781,7 @@ void Engine::KinshipInSubset(IntArray & pairList, IntArray & HetHetCounts,
                het1Count[pp] += oneoneCount[(~GG[0][id1][m]) & GG[1][id1][m] & GG[0][id2][m]]; // Het1Hom2
                het2Count[pp] += oneoneCount[GG[0][id1][m] & (~GG[0][id2][m]) & GG[1][id2][m]]; // Hom1Het2
                HomHomCount[pp] += oneoneCount[GG[0][id1][m] & GG[0][id2][m]]; // HomHom
+               IBSCount[pp] += oneoneCount[GG[1][id1][m] & GG[1][id2][m]];
             }  // end of m
          }  // end of p
       }  // end of blockm
@@ -734,6 +792,7 @@ void Engine::KinshipInSubset(IntArray & pairList, IntArray & HetHetCounts,
          het1Counts[p] += het1Count[pp];
          het2Counts[p] += het2Count[pp];
          HomHomCounts[p] += HomHomCount[pp];
+         IBSCounts[p] += IBSCount[pp];
       }  // end of p
    }  // end of blockp
 }
@@ -829,18 +888,18 @@ void Engine::IBD2SegInSubset(IntArray & pairList, Vector & ibd2props, Vector & m
             for(int seg = 0; seg < newsegCount; seg++){
                if(seg+1 < newsegCount && // two IBD2 Segments can be merged
                   chromosomes[startPos[seg+1]*16] == chromosomes[stopPos[seg]*16+15] &&
-                  positions[startPos[seg+1]*16]-positions[stopPos[seg]*16+15]<1.0){
+                  bp[startPos[seg+1]*16]-bp[stopPos[seg]*16+15]<1000000){
                   startPos[seg+1] = startPos[seg];
                   continue;
                }
                if(stopPos[seg] == shortCount-1)
-                  length = positions[markerCount-1] - positions[startPos[seg]*16];
+                  length = bp[markerCount-1] - bp[startPos[seg]*16];
                else
-                  length = positions[stopPos[seg]*16+15] - positions[startPos[seg]*16];
-               if(length > 0.1) ibd2prop += length;
+                  length = bp[stopPos[seg]*16+15] - bp[startPos[seg]*16];
+               if(length > 100000) ibd2prop += length;
                if(length > maxLength) maxLength = length;
             }
-            if(maxLength < 10) ibd2prop=0.0;
+            if(maxLength < 10000000) ibd2prop=0.0;
             else
                ibd2prop /= totalLength;
       }

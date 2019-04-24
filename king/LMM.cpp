@@ -1,6 +1,19 @@
+//////////////////////////////////////////////////////////////////////
 // LMM.cpp
-// 2/7/2013 Wei-Min Chen
-
+// (c) 2010-2019 Wei-Min Chen
+//
+// This file is distributed as part of the KING source code package
+// and may not be redistributed in any form, without prior written
+// permission from the author. Permission is granted for you to
+// modify this file for your own personal use, but modified versions
+// must retain this copyright notice and must not be distributed.
+//
+// Permission is granted for you to use this file to compile KING.
+//
+// All computer programs have bugs. Use this file at your own risk.
+//
+// Feb 22, 2019
+
 #include "analysis.h"
 #include <math.h>
 #include "Kinship.h"
@@ -21,41 +34,36 @@ double Engine::fLL(double x)// -log(likelihood)
 {
    double N = UY.Length();
    double J = UX.cols; // # covariates
-   Vector beta(J);
    Matrix M(J, J);
-   M.Zero();
    for(int i = 0; i < J; i++)
-      for(int j = 0; j < J; j++)
+      for(int j = 0; j < J; j++){
+         double temp = 0.0;
          for(int k = 0; k < N; k++)
-            M[i][j] += UX[k][i] * UX[k][j] / (EV[k] + x);
-
+            temp += UX[k][i] * UX[k][j] / (EV[k] + x);
+         M[i][j] = temp;
+      }
    Cholesky chol;
-//   if(chol.TryDecompose(M)==0)
-//      M.Print(stdout, 10, 10);
    chol.Decompose(M);
-
    Vector tV(J);
-   tV.Zero();
-   for(int i = 0; i < J; i++)
+   for(int i = 0; i < J; i++){
+      double temp = 0.0;
       for(int k = 0; k < N; k++)
-         tV[i] += UX[k][i] * UY[k] / (EV[k] + x);
+         temp += UX[k][i] * UY[k] / (EV[k] + x);
+      tV[i] = temp;
+   }
    chol.BackSubst(tV);
-   beta = chol.x;
-
-   tV.Dimension(N);
-   tV.Zero();
-   for(int i = 0; i < N; i++)
-      for(int j = 0; j < J; j++)
-         tV[i] += UX[i][j] * beta[j];
-   for(int i = 0; i < N; i++)
-      tV[i] = UY[i] - tV[i];
-   double sigmaG = 0.0;
-   for(int i = 0; i < N; i++)
-      sigmaG += tV[i] * tV[i] / (EV[i] + x);
-   sigmaG /= N;
    double result = 0.0;
-   for(int i = 0; i < N; i++)
-      result += log(EV[i] + x);
+   double sigmaG = 0.0;
+   for(int i = 0; i < N; i++){
+      double temp = 0.0;
+      for(int j = 0; j < J; j++)
+         temp += UX[i][j] * chol.x[j];
+      temp = UY[i] - temp;
+      double temp2 = EV[i] + x;
+      sigmaG += temp * temp / temp2;
+      result += log(temp2);
+   }
+   sigmaG /= N;
    result += N * (log(2*PI*sigmaG) + 1);
    return result*0.5;
 }
@@ -402,7 +410,7 @@ void Engine::LMM()
    if(N_Trait > 1)
       fprintf(fp, "\tTraitName");
    if(chromosomes.Length()) fprintf(fp, "\tChr");
-   if(positions.Length()) fprintf(fp, "\tPos");
+   if(bp.Length()) fprintf(fp, "\tPos");
    fprintf(fp, "\tLabelA\tLabela\tFreqA\tLogLik\tBeta\tSE\tZ\tSigmaG\tH2\tPvalue\n");
 
    int k, mm;
@@ -546,8 +554,8 @@ void Engine::LMM()
                fprintf(fp, "\t%s", (const char*)ped.traitNames[traits[t]]);
             if(chromosomes.Length())
                fprintf(fp, "\t%d", chromosomes[pos]);
-            if(positions.Length())
-               fprintf(fp, "\t%.6lf", positions[pos]);
+            if(bp.Length())
+               fprintf(fp, "\t%.6lf", bp[pos]*0.000001);
             fprintf(fp, "\t%s\t%s\t%.3lf",
                (const char*)alleleLabel[0][pos], (const char*)alleleLabel[1][pos], freq[m]);
             if(zstat != _NAN_)
