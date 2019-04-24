@@ -88,6 +88,7 @@ First, make sure to change your current directory to
 
 ```
  $ cd examples/
+
  $ ../apigenome/bin/cloudify --cmd ../scripts/run-discovery-local.cmd 
 ```
 
@@ -179,6 +180,7 @@ using the following commands:
 
 ```
    $ cut -f 1,4,5 index/intervals/b38.intervals.X.10Mb.1Mb.txt | grep -v ^chrX | awk '{print "out/genotypes/hgdp/"$1"/merged."$1"_"$2"_"$3".gtonly.minDP0.hgdp.bcf"}' > out/index/hgdp.auto.bcflist.txt
+
    $ ../bcftools/bcftools concat -n -f out/index/hgdp.auto.bcflist.txt -Ob -o out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.bcf
 ```
 
@@ -188,7 +190,9 @@ tools as follows:
 
 ```
    $ plink-1.9 --bcf out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.bcf --make-bed --out out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.plink --allow-extra-chr
+
    $ ../king/king -b out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.plink.bed --degree 4 --kinship --prefix out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.king
+
    $ ../apigenome/bin/vcf-infer-ped --kin0 out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.king.kin0 --sex out/genotypes/merged/chr1/merged.chr1_1_1000000.sex_map.txt --out out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.king.inferred.ped
 ```
 
