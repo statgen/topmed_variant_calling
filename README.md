@@ -65,31 +65,28 @@ reproducible variant calling pipeline that resembles the latest
 TOPMed variant calling pipeline. In order to do so, you need do
 download the following two sets of files.
 
-1. Download 107 CRAMs from the public GCS bucket.
-   The CRAM files are publicly available at
+1. Download the resource files for the variant calling. The tarball
+   package is available at
+   ``ftp://share.sph.umich.edu/1000genomes/fullProject/hg38_resources``. The ``resources/`` directory must be under ``examples/``directory
+   to conform the examples below. 
+2. Download 107 CRAMs from the public GCS bucket.
+   The CRAM files are publicly available via FTP at
    ``gs://topmed-irc-share/public``. However, if you want to access
    the data outside the Google Cloud, it will not be free of charge. 
    To download the files, you need to set the ``[PROJECT_ID]`` that is
    associated with a billing account, and use ``gsutil`` tool.
    The total amount of CRAM files is 2.17TB, and the estimate egress
-   charge is $256 assuming $0.12/GB rate posted at [https://cloud.google.com/compute/pricing#internet_egress]
-   Here in the tutorial, we will assume that the files are stored or
-   symbolic linked in the
-   ``examples/crams`` directory.
-
+   charge is $256 assuming $0.12/GB rate posted at https://cloud.google.com/compute/pricing#internet_egress
 ```
    gsutil -u [PROJECT_ID] -m cp -r gs://topmed-irc-share/public [DESTINATION_PATH]
 ```
 
-(The location will be
-   posted here asap, and contact hmkang@umich.edu in the meantime.) The
+   Here in the tutorial, we will assume that the files are stored or
+   symbolic linked in the
+   ``examples/crams`` directory.
    ``examples/index/list.107.local.crams.index`` file contains the
    sample ID and CRAM file path. The CRAM file and the corresponding
    indices (.cram.crai) must present before running the examples.
-2. Download the resource files for the variant calling. The tarball
-   package is available at
-   ``ftp://share.sph.umich.edu/1000genomes/fullProject/hg38_resources``. The ``resources/`` directory must be under ``examples/``directory
-   to conform the examples below. 
    
 The TOPMed variant calling was performed on the Google Cloud. The
 software tool `cloudify` supports running jobs on the Google Cloud,
