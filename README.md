@@ -65,7 +65,23 @@ reproducible variant calling pipeline that resembles the latest
 TOPMed variant calling pipeline. In order to do so, you need do
 download the following two sets of files.
 
-1. Download 107 CRAMs from the public GCS bucket. (The location will be
+1. Download 107 CRAMs from the public GCS bucket.
+   The CRAM files are publicly available at
+   ``gs://topmed-irc-share/public``. However, if you want to access
+   the data outside the Google Cloud, it will not be free of charge. 
+   To download the files, you need to set the ``[PROJECT_ID]`` that is
+   associated with a billing account, and use ``gsutil`` tool.
+   The total amount of CRAM files is 2.17TB, and the estimate egress
+   charge is $256 assuming $0.12/GB rate posted at [https://cloud.google.com/compute/pricing#internet_egress]
+   Here in the tutorial, we will assume that the files are stored or
+   symbolic linked in the
+   ``examples/crams`` directory.
+
+```
+   gsutil -u [PROJECT_ID] -m cp -r gs://topmed-irc-share/public [DESTINATION_PATH]
+```
+
+(The location will be
    posted here asap, and contact hmkang@umich.edu in the meantime.) The
    ``examples/index/list.107.local.crams.index`` file contains the
    sample ID and CRAM file path. The CRAM file and the corresponding
