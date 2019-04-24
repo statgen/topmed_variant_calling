@@ -68,7 +68,14 @@ download the following two sets of files.
 1. Download the resource files for the variant calling. The tarball
    package is available at
    ``ftp://share.sph.umich.edu/1000genomes/fullProject/hg38_resources``. The ``resources/`` directory must be under ``examples/``directory
-   to conform the examples below. 
+   to conform the examples below. To download the data via command
+   line, you may use the following command. Note that the file size is
+   4.5GB, and it will take a significant amount ot time.
+
+```
+   $ wget ftp://share.sph.umich.edu/1000genomes/fullProject/hg38_resources/topmed_variant_calling_example_resources.tar.gz
+```
+
 2. Download 107 CRAMs from the public GCS bucket.
    The CRAM files are publicly available via FTP at
    ``gs://topmed-irc-share/public``. However, if you want to access
