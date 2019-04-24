@@ -4,12 +4,12 @@ TOPMed Variant Calling Pipeline (latest: Freeze 8)
 Overview of this repository
 ----------------------------
 
-This repository is intended to provide a copy of software tools used for producing TOPMed Year 1 Freeze 5 variant calls and genotypes with a comprehensive documentation that allows investigators to understand the methods and reproduce the variant calls from the same set of aligned sequence reads.
+This repository is intended to provide a copy of software tools used for producing TOPMed Year 1 Freeze 8 variant calls and genotypes with a comprehensive documentation that allows investigators to understand the methods and reproduce the variant calls from the same set of aligned sequence reads.
 
 This repository reflects specific versions of software tools that are
 under active development in the Center for Statistical Genetics
 (CSG). Most of the latest version of these software tools can be
-accessed through multiple repositories linked as submodules, this repository is focused on a freeze of software tools that can reproduce a variant calls compatible to the latest TOPMed Freeze (Freeze 6 currently).
+accessed through multiple repositories linked as submodules, this repository is focused on a freeze of software tools that can reproduce a variant calls compatible to the latest TOPMed Freeze (Freeze 8 currently).
 
 
 Outline of the variant calling procedure
