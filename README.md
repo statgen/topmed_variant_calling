@@ -30,49 +30,68 @@ Our ``GotCloud vt`` pipeline detects and genotype variants from a list of aligne
 
 
 Installation
-------------
+-------------
+First, clone the repository by recursively cloning each submodule.
+```
+   $ git clone --recurse-submodules -j8 https://github.com/statgen/topmed_variant_calling
+   (Use --recursive instead of --recurse-submodules for git version 2.12 or lower) 
+```
 
+Next, build each submodule using the following sets of commands 
+```
+   $ cd libsvm/; make; cd ..
+   $ cd apigenome; autoreconf -vfi; ./configure --prefix $PWD; make; make install; cd ..
+   $ cd cramore; autoreconf -vcf; ./configure; make; cd ..
+   $ cd libStatGen; make; cd ..
+   $ cd bamUtil; make; cd ..
+   $ cd invNorm; make; cd ..
+   $ cd htslib; autoheader; autoconf; ./configure; make; cd ..
+   $ cd samtools; authoheader; autoconf -Wno-syntax; ./configure; make; cd ..
+   $ cd bcftools; make; cd ..
+   $ cd king; g++ -O3 -c *.cpp; g++ -O3 -o king *.o -lz; cd ..
+```
 
-Steps to install and perform variant calling
----------------------------------------------
-To produce variant calls using this pipeline, the following input files needs to be prepared:
+Performing variant calling with example data
+----------------------------------------------
+To produce variant calls using this pipeline, the following input
+files are neded:
 
  1. Aligned sequenced reads in BAM or CRAM format. Each BAM and CRAM file should contain one sample per subject. It also must be indexed using ``samtools index`` or equivalent software tools.
  2. A sequence index file. Each line should contain [Sample ID] [Full Path to the BAM/CRAM file] [Contamination Estimates -- put zero if unknown]. See ``data/trio_data.index`` for example.
- 3. A pedigree file of nuclear families and duplicates in PED format. The pedgiree file should contain only nuclear families. When a sample is duplicated, all Sample IDs representing the same individual (in the 2nd column) need to presented in a comma-separated way. In the 3rd and 4th column to represend their parents, only representative sample ID is required. See ``data/trio_data.ped`` for example.
+ 3. Genomic resource files, such as FASTA, dbSNP, HapMap files.
+ 
+Here we use 107 public samples from the TOPMed project to document a
+reproducible variant calling pipeline that resembles the latest
+TOPMed variant calling pipeline. In order to do so, you need do
+download the following two sets of files.
 
-To clone and build the repository, follow these steps
-```
-  $ git clone https://github.com/statgen/topmed_variant_calling.git
-  $ cd topmed_variant_calling
-  $ make  # or make -j [numjobs] to expedite the process
-```
-After these steps, modify ``scripts/gcconfig.pm`` to specify input data files or other parameters. Modifying the first section (index and ped file in particular) should be minimally required changes.
+1. Download 107 CRAMs from the public GCS bucket. (The location will be
+   posted here asap, and contact hmkang@umich.edu in the meantime.) The
+   ``examples/index/list.107.local.crams.index`` file contains the
+   sample ID and CRAM file path. The CRAM file and the corresponding
+   indices (.cram.crai) must present before running the examples.
+2. Download the resource files for the variant calling. The tarball
+   package will be available at
+   ftp://share.sph.umich.edu/1000genomes/fullProject/hg38_resources
+   . The ``resources/`` directory must be under ``examples/``directory
+   to conform the examples below. 
+   
+The TOPMed variant calling was performed on the Google Cloud. The
+software tool `cloudify` supports running jobs on the Google Cloud,
+but these examples are configured to run in a local
+computer. Cloud-based versions will also be available later.
 
-To perform variant discovery and consolidation, run the following step
-```
-  $ perl scripts/step1-detect-and-merge-variants.pl [whitespace separated chromosome names to call]
-```
-After this step, following the instruction to run ``make -f [Makefile] -j [numjobs]`` to complete the discovery taks
+### Step 1. Sample QC and Variant Detection 
 
-To genotype variants, run the following step.
-```
-  $ perl scripts/step2-joint-genotyping.pl [whitespace separated chromosome names to call]
-```
-After this step, following the instruction to run ``make -f [Makefile] -j [numjobs]`` to complete the discovery taks
-
-To perform variant filtering using pedigre information, follow these steps.
+First, change your current directory to
+``topmed_variant_calling/examples``, and run the following command.
 
 ```
-  $ perl scripts/step3a-compute-milk-score.pl [whitespace separated chromosome names to call]  ## run makefile after this step
-  $ perl scripts/step3b-run-svm-milk-filter.pl [whitespace separated chromosome names to call]  
-  $ perl scripts/step3c-run-milk-transfer.pl [whitespace separated chromosome names to call]  ## this step is needed only when performing transfer learning from other chromosomes.
+ $ ../apigenome/bin/cloudify --cmd ../scripts/run-discovery-local.cmd 
 ```
 
-After all these steps, the called variant sites will be available at ``$(OUTPUT_DIR)/svm``, and the genotypes will be available at ``$(OUTPUT_DIR)/paste``. 
-
-Variant Detection
------------------
+Sample QC and Variant Detection
+-------------------------------
 Variant detection from each sequence (ang aligned) genome is performed by ``vt discover2`` software tool. The script ``step-1-detect-variants.pl`` provide a mean to automate the variant detection across a large number of sequence genome.
 
 The variant detection algorithm consider a variant as a potential candidate variant if there exists a mismatch between the aligned sequence reads and the reference genome. Because such a mismatch can easily occur by random errors, only potential candidate variants passing the following criteria are considered to be ***candidate variants*** in the next steps.

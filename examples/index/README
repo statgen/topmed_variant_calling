@@ -1,0 +1,5 @@
+This directory contains the input file of the example TOPMed variant calling pipeline.
+
+The list.107.local.crams.index file contains 107 public (part of 1000 Genomes) samples sequenced for the TOPMed project. The samples can be downloaded from Google Cloud Storage Bucket. (The location of the bucket will be added here. Contact hmkang@umich.edu in the meantime). 
+
+Also, the resource files are required to perform the example variant calling procedure. The files should be downloadable from ftp://share.sph.umich.edu/1000genomes/fullProject/hg38_resources/
