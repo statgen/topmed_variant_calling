@@ -4,7 +4,7 @@ TOPMed Variant Calling Pipeline (latest: Freeze 8)
 Overview of this repository
 ----------------------------
 
-This repository is intended to provide a copy of software tools used for producing TOPMed Year 1 Freeze 8 variant calls and genotypes with a comprehensive documentation that allows investigators to understand the methods and reproduce the variant calls from the same set of aligned sequence reads.
+This repository is intended to provide a collection of software tools used for producing TOPMed variant calls and genotypes with a comprehensive documentation that allows investigators to understand the methods and reproduce the variant calls from the same set of aligned sequence reads.
 
 This repository reflects specific versions of software tools that are
 under active development in the Center for Statistical Genetics
@@ -57,8 +57,8 @@ To produce variant calls using this pipeline, the following input
 files are neded:
 
  1. Aligned sequenced reads in BAM or CRAM format. Each BAM and CRAM file should contain one sample per subject. It also must be indexed using ``samtools index`` or equivalent software tools.
- 2. A sequence index file. Each line should contain [Sample ID] [Full Path to the BAM/CRAM file] [Contamination Estimates -- put zero if unknown]. See ``data/trio_data.index`` for example.
- 3. Genomic resource files, such as FASTA, dbSNP, HapMap files.
+ 2. A sequence index file. Each line should contain [Sample ID] [Full Path to the BAM/CRAM file]. See ``examples/index/list.107.local.crams.index`` for example.
+ 3. Genomic resource files, such as FASTA, dbSNP, HapMap files, hosted at ftp://share.sph.umich.edu/1000genomes/fullProject/hg38_resources
  
 Here we use 107 public samples from the TOPMed project to document a
 reproducible variant calling pipeline that resembles the latest
@@ -73,7 +73,9 @@ download the following two sets of files.
    4.5GB, and it will take a significant amount ot time.
 
 ```
+   $ cd examples/
    $ wget ftp://share.sph.umich.edu/1000genomes/fullProject/hg38_resources/topmed_variant_calling_example_resources.tar.gz
+   $ tar xzvf topmed_variant_calling_example_resources.tar.gz
 ```
 
 2. Download 107 CRAMs from the public GCS bucket.
