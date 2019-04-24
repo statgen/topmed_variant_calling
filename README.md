@@ -83,15 +83,164 @@ computer. Cloud-based versions will also be available later.
 
 ### Step 1. Sample QC and Variant Detection 
 
-First, change your current directory to
+First, make sure to change your current directory to
 ``topmed_variant_calling/examples``, and run the following command.
 
 ```
+ $ cd examples/
  $ ../apigenome/bin/cloudify --cmd ../scripts/run-discovery-local.cmd 
 ```
 
-Sample QC and Variant Detection
--------------------------------
+Then follow the instruction to run ``make`` with proper arguments to
+complete the step. This step performs the following things
+* Run ``vt discover2`` to detect potential candidate variants to
+  generate per-sample BCF.
+* Run ``verifyBamID2`` to jointly estimate genetic ancestry and DNA
+  contamination.
+* Run ``vcf-normalize-depth`` to calculate relative X/Y depth to
+  determine the sex of sequenced genome.
+  
+More technical details can be found by directly examining
+``../scripts/run-discovery-local.cmd``. The ``cloudify`` script take
+this command file and iterate the command across all samples listed in
+the index file in an idempotent manner using GNU ``make``.
+
+After running the steps above, the ``verifyBamID2`` results and X/Y
+depth results should be merged together into a single index file using
+the following command:
+
+```
+  $ ../apigenome/bin/cram-vb-xy-index --index index/list.107.local.crams.index --dir out/sm/ --out out/index/list.107.local.crams.vb_xy.index
+```
+
+### Step 2. Hierarchical merge of variant sites across all samples
+
+Next step is to merge the candidate variant sites across all sequenced
+genomes. Even though the example file consist of only 107 samples, we
+used a batch of 20 to show examples how to process hundreds of
+thousands of genomes without opening all the files in a single
+process. We typically process 1,000 samples per batch, and merge
+hundreds of batches together later on.
+
+```
+  $ ../apigenome/bin/cloudify --cmd ../scripts/run-merge-sites-local.cmd 
+```
+
+This command will make a merged site list for each batch and each 10Mb
+interval. These per-batch site list are further merged and
+consolidated using the following command.
+
+```
+  $ ../apigenome/bin/cloudify --cmd ../scripts/run-union-sites-local.cmd
+```
+
+As a result, there will be merged and consolidated site list across
+all samples for each 10Mb region at ``out/union/`` directory.
+
+### Step 3. Hierarchical genotyping of merged variant sites
+
+The merged site list can be jointly genotyped across the
+samples. However, joint genotyping of >100,000s samples is not
+straighforward. We again perform genotyping for 1,000 samples for eac
+10Mb region. Next we hierarchically merge the genotypes across all the
+batches, but with much smaller region size (e.g. 100kb) to maintain
+the file size and running time manageable in a single machine. During
+this joint genotyping step, we use the DNA contamination rate,
+inferred genetic ancestries, and
+inferred sex for more accurate genotyping.
+
+In this example, we used a batch size of 20, and use 1Mb region size
+when merging the genotypes across batches, to resemble the Freeze 8
+calling pipeline.
+
+First, generating per-batch genotypes for each 10Mb region can be
+acheived using the following command:
+
+```
+  $ ../apigenome/bin/cloudify --cmd ../scripts/run-batch-genotype-local.cmd 
+```
+
+Next, pasting the genotypes across all batches while recalculating the
+variant features is achieved using the following command:
+
+```
+  $ ../apigenome/bin/cloudify --cmd ../scripts/run-paste-genotypes-local.cmd
+```
+
+### Step 4. Infer Duplicates and Related Individuals
+
+The step above not only pastes the genotypes across the samples, but also
+generate multiple versions of genotypes, such as ``minDP0`` (no
+missing genotypes), ``minDP10`` (genotypes marked missing if depth is
+10 or less)., and ``hgdp`` (extract only HGDP-polymorphic sites). 
+
+The HGDP genotypes on autosomes can be merged together across all regions
+using the following commands:
+
+```
+   $ cut -f 1,4,5 index/intervals/b38.intervals.X.10Mb.1Mb.txt | grep -v ^chrX | awk '{print "out/genotypes/hgdp/"$1"/merged."$1"_"$2"_"$3".gtonly.minDP0.hgdp.bcf"}' > out/index/hgdp.auto.bcflist.txt
+   $ ../bcftools/bcftools concat -n -f out/index/hgdp.auto.bcflist.txt -Ob -o out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.bcf
+```
+
+These HGDP-site BCF file can be convered into PLINK format, and
+pedigree can be inferred using ``king`` and ``vcf-infer-ped`` software
+tools as follows:
+
+```
+   $ plink-1.9 --bcf out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.bcf --make-bed --out out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.plink --allow-extra-chr
+   $ ../king/king -b out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.plink.bed --degree 4 --kinship --prefix out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.king
+   $ ../apigenome/bin/vcf-infer-ped --kin0 out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.king.kin0 --sex out/genotypes/merged/chr1/merged.chr1_1_1000000.sex_map.txt --out out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.king.inferred.ped
+```
+
+The inferred pedigree file using these procedure only contains nuclear
+families and duplicates in a specialized PED format. When a sample is
+duplicated, all sample IDs representing the duplicated sample (in the
+2nd column) need to presented in a comma-separated way. In the 3rd and
+4th column to represend their parents, only representative sample ID (first
+among comma-separated duplicate ID) is required. 
+
+### Step 5. Run SVM variant filtering
+
+Using the infered pedigree, we compute duplicate and Mendelian
+consistency, and use the information to aid variant filtering. 
+First, duplicate and Mendelian consistency is compute using the
+following ``milk`` (Mendelian-inheritance under likelihood framework) command
+
+```
+   $ ../apigenome/bin/cloudify --cmd ../scripts/run-milk-local.cmd
+```
+
+The results are merged across each chromosome in the following way.
+
+```
+   $ cut -f 1,4,5 index/intervals/b38.intervals.X.10Mb.1Mb.txt | awk '{print "out/milk/"$1"/milk."$1"_"$2"_"$3".sites.vcf.gz"}' > out/index/milk.autoX.bcflist.txt
+
+   $ (seq 1 22; echo X;) | xargs -I {} -P 10 bash -c "grep chr{}_ out/index/milk.autoX.bcflist.txt | ../bcftools/bcftools concat -f /dev/stdin -Oz -o out/milk/milk.chr{}.sites.vcf.gz"
+
+   $ (seq 1 22; echo X;) | xargs -I {} -P 10 ../htslib/tabix -f -pvcf out/milk/milk.chr{}.sites.vcf.gz 
+```
+
+Finally, the SVM filtering step is performed using
+``vcf-svm-milk-filter`` tool. The training is typically done with one
+chromosome, for example ``chr2``.
+
+```
+   $ mkdir out/svm
+
+   $ ../apigenome/bin/vcf-svm-milk-filter --in-vcf out/milk/milk.chr2.sites.vcf.gz --out out/svm/milk_svm.chr2 --ref resources/ref/hs38DH.fa --dbsnp resources/ref/dbsnp_142.b38.vcf.gz --posvcf resources/ref/hapmap_3.3.b38.sites.vcf.gz --posvcf resources/ref/1000G_omni2.5.b38.sites.PASS.vcf.gz --train --centromere resources/ref/hg38.centromere.bed.gz --bgzip ../htslib/bgzip --tabix ../htslib/tabix --invNorm $GC/bin/invNorm --svm-train $GC/bin/svm-train --svm-predict $GC/bin/svm-predict 
+```
+
+After finishing the training, the other chromosomes uses the same
+training model to perform SVM filtering.
+
+```
+   $ (seq 1 22; echo X;) | grep -v -w 2 | xargs -I {} -P 10 ../apigenome/bin/vcf-svm-milk-filter --in-vcf out/milk/milk.chr{}.sites.vcf.gz --out out/svm/milk_svm.chr{} --ref resources/ref/hs38DH.fa --dbsnp resources/ref/dbsnp_142.b38.vcf.gz --posvcf resources/ref/hapmap_3.3.b38.sites.vcf.gz --posvcf resources/ref/1000G_omni2.5.b38.sites.PASS.vcf.gz --model out/svm/milk_svm.chr2.svm.model --centromere resources/ref/hg38.centromere.bed.gz --bgzip ../htslib/bgzip --tabix ../htslib/tabix --invNorm $GC/bin/invNorm --svm-train ../libsvm/svm-train --svm-predict ../libsvm/svm-predict 
+```
+
+The details of each steps are elaborated below.
+
+Variant Detection Details
+--------------------------
 Variant detection from each sequence (ang aligned) genome is performed by ``vt discover2`` software tool. The script ``step-1-detect-variants.pl`` provide a mean to automate the variant detection across a large number of sequence genome.
 
 The variant detection algorithm consider a variant as a potential candidate variant if there exists a mismatch between the aligned sequence reads and the reference genome. Because such a mismatch can easily occur by random errors, only potential candidate variants passing the following criteria are considered to be ***candidate variants*** in the next steps.
@@ -142,7 +291,7 @@ The genotyping was done by adjusting for potential contamination. It uses adjust
 
 Variant Filtering
 -----------------
-The variant filtering in TOPMed Freeze 6 were performed by (1) first calculating Mendelian consistency scores using known familial relatedness and duplicates, and (2) training SVM classifier between the known variant site (positive labels) and the Mendelian inconsistent variants (negative labels). 
+The variant filtering in TOPMed Freeze 8 were performed by (1) first calculating Mendelian consistency scores using known familial relatedness and duplicates, and (2) training SVM classifier between the known variant site (positive labels) and the Mendelian inconsistent variants (negative labels). 
 
 The negative labels are defined if the Bayes Factor for Mendelian consistency quantified as ``Pr(Reads | HWE, Pedigree) / Pr(Reads | HWD, no Pedigree )`` less than 0.001. Also variant is marked as negative labels if 3 or more samples show 20% of non-reference Mendelian discordance within families or genotype discordance between duplicated samples.
 
