@@ -161,7 +161,7 @@ This command will make a merged site list for each batch and each 10Mb
 interval. Upon successful completion, we expect to see the following files.
 * ``out/union/[BATCH]/b[BATCH].chr[CHROM]_[BEGIN_10Mb_CHUNK]_[END_10Mb_CHUNK].merged.sites.bcf``
 * ``out/union/[BATCH]/b[BATCH].chr[CHROM]_[BEGIN_10Mb_CHUNK]_[END_10Mb_CHUNK].merged.sites.bcf.csi``
-where ``[BATCH]`` represent the batch (e.g. 1, 21, .., 101 in our example data, as available at [examples/index/seq.batches.by.20.txt](examples/index/seq.batches.by.20.txt) ). 
+where ``[BATCH]`` represent the batch (e.g. 1, 21, .., 101 in our example data, as available at [examples/index/seq.batches.by.20.txt](examples/index/seq.batches.by.20.txt) ), and ``[BEGIN_10Mb_CHUNK]`` and ``[END_10Mb_CHUNK]`` are available at [examples/index/intervals/b38.intervals.X.10Mb.10Mb.txt](examples/index/intervals/b38.intervals.X.10Mb.10Mb.txt). 
 
 These per-batch site list are further merged and
 consolidated using the following command.
@@ -198,12 +198,30 @@ acheived using the following command:
   $ ../apigenome/bin/cloudify --cmd ../scripts/run-batch-genotype-local.cmd 
 ```
 
+Upon successful completion, we expect to see the following files.
+* ``out/genotypes/batches/[BATCH]/b[BATCH].chr[CHROM]_[BEGIN_10Mb_CHUNK]_[END_10Mb_CHUNK].genotypes.bcf``
+* ``out/genotypes/batches/[BATCH]/b[BATCH].chr[CHROM]_[BEGIN_10Mb_CHUNK]_[END_10Mb_CHUNK].genotypes.bcf``
+where ``[BATCH]`` represent the batch (e.g. 1, 21, .., 101 in our example data, as available at [examples/index/seq.batches.by.20.txt](examples/index/seq.batches.by.20.txt) ), and ``[BEGIN_10Mb_CHUNK]`` and ``[END_10Mb_CHUNK]`` are available at [examples/index/intervals/b38.intervals.X.10Mb.10Mb.txt](examples/index/intervals/b38.intervals.X.10Mb.10Mb.txt). 
+
+
 Next, pasting the genotypes across all batches while recalculating the
 variant features is achieved using the following command:
 
 ```
   $ ../apigenome/bin/cloudify --cmd ../scripts/run-paste-genotypes-local.cmd
 ```
+
+Upon successful completion, we expect to see the following files.
+* ``out/genotypes/merged/[CHROM]/merged.chr[CHROM]_[BEGIN_1Mb_CHUNK]_[END_1Mb_CHUNK].genotypes.bcf``
+* ``out/genotypes/merged/[CHROM]/merged.chr[CHROM]_[BEGIN_1Mb_CHUNK]_[END_1Mb_CHUNK].genotypes.bcf.csi``
+* ``out/genotypes/minDP0/[CHROM]/merged.chr[CHROM]_[BEGIN_1Mb_CHUNK]_[END_1Mb_CHUNK].gtonly.minDPO.bcf``
+* ``out/genotypes/minDP0/[CHROM]/merged.chr[CHROM]_[BEGIN_1Mb_CHUNK]_[END_1Mb_CHUNK].gtonly.minDPO.bcf.csi``
+* ``out/genotypes/minDP10/[CHROM]/merged.chr[CHROM]_[BEGIN_1Mb_CHUNK]_[END_1Mb_CHUNK].gtonly.minDP10.bcf``
+* ``out/genotypes/minDP10/[CHROM]/merged.chr[CHROM]_[BEGIN_1Mb_CHUNK]_[END_1Mb_CHUNK].gtonly.minDP10.bcf.csi``
+* ``out/genotypes/hgdp/[CHROM]/merged.chr[CHROM]_[BEGIN_1Mb_CHUNK]_[END_1Mb_CHUNK].gtonly.minDP10.hgdp.bcf``
+* ``out/genotypes/hgdp/[CHROM]/merged.chr[CHROM]_[BEGIN_1Mb_CHUNK]_[END_1Mb_CHUNK].gtonly.minDP10.hgdp.bcf.csi``
+where ``[BATCH]`` represent the batch (e.g. 1, 21, .., 101 in our example data, as available at [examples/index/seq.batches.by.20.txt](examples/index/seq.batches.by.20.txt) ), and ``[CHROM]``, ``[BEGIN_1Mb_CHUNK]``, and ``[END_1Mb_CHUNK]`` are available in 1st, 4th, and 5th column at [examples/index/intervals/b38.intervals.X.10Mb.1Mb.txt](examples/index/intervals/b38.intervals.X.10Mb.1Mb.txt). 
+
 
 ### Step 4. Inferring Duplicated and Related Individuals
 
@@ -250,6 +268,11 @@ following ``milk`` (Mendelian-inheritance under likelihood framework) command
 ```
    $ ../apigenome/bin/cloudify --cmd ../scripts/run-milk-local.cmd
 ```
+
+* ``out/milk/[CHROM]/milk.chr[CHROM]_[BEGIN_1Mb_CHUNK]_[END_1Mb_CHUNK].full.vcf.gz``
+* ``out/milk/[CHROM]/milk.chr[CHROM]_[BEGIN_1Mb_CHUNK]_[END_1Mb_CHUNK].sites.vcf.gz``
+* ``out/milk/[CHROM]/milk.chr[CHROM]_[BEGIN_1Mb_CHUNK]_[END_1Mb_CHUNK].sites.vcf.gz.tbi``
+
 
 The results are merged across each chromosome in the following way.
 
