@@ -72,7 +72,7 @@ download the following two sets of files.
    indices (.cram.crai) must present before running the examples.
 2. Download the resource files for the variant calling. The tarball
    package is available at
-   [[ftp://share.sph.umich.edu/1000genomes/fullProject/hg38_resources]]
+   [ftp://share.sph.umich.edu/1000genomes/fullProject/hg38_resources](ftp://share.sph.umich.edu/1000genomes/fullProject/hg38_resources)
    . The ``resources/`` directory must be under ``examples/``directory
    to conform the examples below. 
    
