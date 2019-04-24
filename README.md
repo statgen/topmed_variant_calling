@@ -122,6 +122,12 @@ complete the step. This step performs the following things
 * Run ``vcf-normalize-depth`` to calculate relative X/Y depth to
   determine the sex of sequenced genome.
   
+Upon successful completion, we expect to see the following files for each sequenced genome represented by ``[NWD_ID]``. 
+ * ``out/sm/[NWD_ID]/[NWD_ID].bcf``
+ * ``out/sm/[NWD_ID]/[NWD_ID].bcf.csi``
+ * ``out/sm/[NWD_ID]/[NWD_ID].vb2``
+ * ``out/sm/[NWD_ID]/[NWD_ID].norm.xy`` 
+  
 More technical details can be found by directly examining
 ``../scripts/run-discovery-local.cmd``. The ``cloudify`` script take
 this command file and iterate the command across all samples listed in
@@ -159,7 +165,7 @@ consolidated using the following command.
 As a result, there will be merged and consolidated site list across
 all samples for each 10Mb region at ``out/union/`` directory.
 
-### Step 3. Hierarchical genotyping of merged variant sites
+### Step 3. Hierarchical joint genotyping of merged variant sites
 
 The merged site list can be jointly genotyped across the
 samples. However, joint genotyping of >100,000s samples is not
@@ -189,7 +195,7 @@ variant features is achieved using the following command:
   $ ../apigenome/bin/cloudify --cmd ../scripts/run-paste-genotypes-local.cmd
 ```
 
-### Step 4. Infer Duplicates and Related Individuals
+### Step 4. Inferring Duplicated and Related Individuals
 
 The step above not only pastes the genotypes across the samples, but also
 generate multiple versions of genotypes, such as ``minDP0`` (no
@@ -224,7 +230,7 @@ duplicated, all sample IDs representing the duplicated sample (in the
 4th column to represend their parents, only representative sample ID (first
 among comma-separated duplicate ID) is required. 
 
-### Step 5. Run SVM variant filtering
+### Step 5. Run SVM variant filtering guided by the inferred pedigree.
 
 Using the infered pedigree, we compute duplicate and Mendelian
 consistency, and use the information to aid variant filtering. 
