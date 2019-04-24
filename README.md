@@ -57,7 +57,7 @@ To produce variant calls using this pipeline, the following input
 files are neded:
 
  1. Aligned sequenced reads in BAM or CRAM format. Each BAM and CRAM file should contain one sample per subject. It also must be indexed using ``samtools index`` or equivalent software tools.
- 2. A sequence index file. Each line should contain [Sample ID] [Full Path to the BAM/CRAM file]. See ``examples/index/list.107.local.crams.index`` for example.
+ 2. A sequence index file. Each line should contain [Sample ID] [Full Path to the BAM/CRAM file]. See [examples/index/list.107.local.crams.index](examples/index/list.107.local.crams.index) for example.
  3. Genomic resource files, such as FASTA, dbSNP, HapMap files. An example collection of such resources is hosted at ``ftp://share.sph.umich.edu/1000genomes/fullProject/hg38_resources``
  
 Here we use 107 public samples from the TOPMed project to document a
@@ -85,7 +85,7 @@ download the following two sets of files.
    To download the files, you need to set the ``[PROJECT_ID]`` that is
    associated with a billing account, and use ``gsutil`` tool.
    The total amount of CRAM files is 2.17TB, and the estimate egress
-   charge is $256 assuming $0.12/GB rate posted at https://cloud.google.com/compute/pricing#internet_egress
+   charge is $256 assuming $0.12/GB rate available at https://cloud.google.com/compute/pricing#internet_egress
 ```
    gsutil -u [PROJECT_ID] -m cp -r gs://topmed-irc-share/public [DESTINATION_PATH]
 ```
@@ -93,19 +93,19 @@ download the following two sets of files.
    Here in the tutorial, we will assume that the files are stored or
    symbolic linked in the
    ``examples/crams`` directory.
-   ``examples/index/list.107.local.crams.index`` file contains the
+   The [examples/index/list.107.local.crams.index](examples/index/list.107.local.crams.index) file contains the
    sample ID and CRAM file path. The CRAM file and the corresponding
    indices (.cram.crai) must present before running the examples.
    
-The TOPMed variant calling was performed on the Google Cloud. The
-software tool `cloudify` supports running jobs on the Google Cloud,
-but these examples are configured to run in a local
-computer. Cloud-based versions will also be available later.
+The TOPMed variant calling has been performed on the Google Cloud. The
+software tool `cloudify` supports running jobs on the Google Cloud. However,
+the tutorial examples here are configured to run in a local
+computer. Cloud-based example commands will also be available later.
 
 ### Step 1. Sample QC and Variant Detection 
 
-First, make sure to change your current directory to
-``topmed_variant_calling/examples``, and run the following command.
+First, make sure to change your current directory to the directory [[examples]](examples)
+, and run the following command.
 
 ```
  $ cd examples/
@@ -117,7 +117,7 @@ Then follow the instruction to run ``make`` with proper arguments to
 complete the step. This step performs the following things
 * Run ``vt discover2`` to detect potential candidate variants to
   generate per-sample BCF.
-* Run ``verifyBamID2`` to jointly estimate genetic ancestry and DNA
+* Run ``cramore verify-bam`` (verifyBamID2) to jointly estimate genetic ancestry and DNA
   contamination.
 * Run ``vcf-normalize-depth`` to calculate relative X/Y depth to
   determine the sex of sequenced genome.
@@ -138,8 +138,11 @@ depth results should be merged together into a single index file using
 the following command:
 
 ```
+  $ mkdir --p out/index/
   $ ../apigenome/bin/cram-vb-xy-index --index index/list.107.local.crams.index --dir out/sm/ --out out/index/list.107.local.crams.vb_xy.index
 ```
+
+Upon successful completion, we expect to see the file ``out/index/list.107.local.crams.vb_xy.index`` that has a header line and one line for each of 107 samples.
 
 ### Step 2. Hierarchical merge of variant sites across all samples
 
@@ -155,7 +158,12 @@ hundreds of batches together later on.
 ```
 
 This command will make a merged site list for each batch and each 10Mb
-interval. These per-batch site list are further merged and
+interval. Upon successful completion, we expect to see the following files.
+* ``out/union/[BATCH]/b[BATCH].chr[CHROM]_[BEGIN_10Mb_CHUNK]_[END_10Mb_CHUNK].merged.sites.bcf``
+* ``out/union/[BATCH]/b[BATCH].chr[CHROM]_[BEGIN_10Mb_CHUNK]_[END_10Mb_CHUNK].merged.sites.bcf.csi``
+where ``[BATCH]`` represent the batch (e.g. 1, 21, 41, 61, 81, 101 in our example data, as available at [examples/index/seq.batches.by.20.txt](examples/index/seq.batches.by.20.txt) ). 
+
+These per-batch site list are further merged and
 consolidated using the following command.
 
 ```
