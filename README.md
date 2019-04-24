@@ -58,7 +58,7 @@ files are neded:
 
  1. Aligned sequenced reads in BAM or CRAM format. Each BAM and CRAM file should contain one sample per subject. It also must be indexed using ``samtools index`` or equivalent software tools.
  2. A sequence index file. Each line should contain [Sample ID] [Full Path to the BAM/CRAM file]. See ``examples/index/list.107.local.crams.index`` for example.
- 3. Genomic resource files, such as FASTA, dbSNP, HapMap files, hosted at ftp://share.sph.umich.edu/1000genomes/fullProject/hg38_resources
+ 3. Genomic resource files, such as FASTA, dbSNP, HapMap files. An example collection of such resources is hosted at ``ftp://share.sph.umich.edu/1000genomes/fullProject/hg38_resources``
  
 Here we use 107 public samples from the TOPMed project to document a
 reproducible variant calling pipeline that resembles the latest
@@ -67,8 +67,8 @@ download the following two sets of files.
 
 1. Download the resource files for the variant calling. The tarball
    package is available at
-   ``ftp://share.sph.umich.edu/1000genomes/fullProject/hg38_resources``. The ``resources/`` directory must be under ``examples/``directory
-   to conform the examples below. To download the data via command
+   ``ftp://share.sph.umich.edu/1000genomes/fullProject/hg38_resources``. The ``resources/`` directory is assumed to be present under ``examples/``directory
+   in our tutorial. To download the data via command
    line, you may use the following command. Note that the file size is
    4.5GB, and it will take a significant amount ot time.
 
@@ -207,7 +207,7 @@ using the following commands:
 
 These HGDP-site BCF file can be convered into PLINK format, and
 pedigree can be inferred using ``king`` and ``vcf-infer-ped`` software
-tools as follows:
+tools as follows. Note that ``plink-1.9`` is not the part of this repository and you need to obtain the software separately at https://www.cog-genomics.org/plink2 . 
 
 ```
    $ plink-1.9 --bcf out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.bcf --make-bed --out out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.plink --allow-extra-chr
