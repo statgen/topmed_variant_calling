@@ -104,7 +104,7 @@ computer. Cloud-based example commands will also be available later.
 
 ### Step 1. Sample QC and Variant Detection 
 
-First, make sure to change your current directory to the directory [[examples]](examples)
+First, make sure to change your current directory to [examples](examples)
 , and run the following command.
 
 ```
@@ -161,7 +161,7 @@ This command will make a merged site list for each batch and each 10Mb
 interval. Upon successful completion, we expect to see the following files.
 * ``out/union/[BATCH]/b[BATCH].chr[CHROM]_[BEGIN_10Mb_CHUNK]_[END_10Mb_CHUNK].merged.sites.bcf``
 * ``out/union/[BATCH]/b[BATCH].chr[CHROM]_[BEGIN_10Mb_CHUNK]_[END_10Mb_CHUNK].merged.sites.bcf.csi``
-where ``[BATCH]`` represent the batch (e.g. 1, 21, 41, 61, 81, 101 in our example data, as available at [examples/index/seq.batches.by.20.txt](examples/index/seq.batches.by.20.txt) ). 
+where ``[BATCH]`` represent the batch (e.g. 1, 21, .., 101 in our example data, as available at [examples/index/seq.batches.by.20.txt](examples/index/seq.batches.by.20.txt) ). 
 
 These per-batch site list are further merged and
 consolidated using the following command.
@@ -171,7 +171,9 @@ consolidated using the following command.
 ```
 
 As a result, there will be merged and consolidated site list across
-all samples for each 10Mb region at ``out/union/`` directory.
+all samples for each 10Mb region at ``out/union/`` directory. Upon completion, the following files are expected to be seen.
+* ``out/union/union.chr[CHROM]_[BEGIN_10Mb_CHUNK]_[END_10Mb_CHUNK].sites.bcf``
+* ``out/union/union.chr[CHROM]_[BEGIN_10Mb_CHUNK]_[END_10Mb_CHUNK].sites.bcf.csi``
 
 ### Step 3. Hierarchical joint genotyping of merged variant sites
 
