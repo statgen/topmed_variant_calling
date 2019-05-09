@@ -83,7 +83,7 @@ download the following two sets of files.
    ``gs://topmed-irc-share/public``. However, if you want to access
    the data outside the Google Cloud, it will not be free of charge. 
    To download the files, you need to set the ``[PROJECT_ID]`` that is
-   associated with a billing account, and use ``gsutil`` tool.
+   associated with a billing account, and use ``gsutil`` tool documented at https://cloud.google.com/storage/docs/gsutil.
    The total amount of CRAM files is 2.17TB, and the estimate egress
    charge is $256 assuming $0.12/GB rate available at https://cloud.google.com/compute/pricing#internet_egress
 ```
