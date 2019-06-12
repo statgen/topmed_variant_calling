@@ -41,7 +41,7 @@ Next, build each submodule using the following sets of commands
 ```
    $ cd libsvm/; make; cd ..
    $ cd apigenome; autoreconf -vfi; ./configure --prefix $PWD; make; make install; cd ..
-   $ cd cramore; autoreconf -vcf; ./configure; make; cd ..
+   $ cd cramore; autoreconf -vfi; ./configure; make; cd ..
    $ cd libStatGen; make; cd ..
    $ cd bamUtil; make; cd ..
    $ cd invNorm; make; cd ..
