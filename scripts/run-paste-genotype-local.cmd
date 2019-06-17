@@ -4,10 +4,10 @@
 # var : PREFIX : $INTERVAL$1$/merged.$INTERVAL$1$_$INTERVAL$4$_$INTERVAL$5$
 # name : example-paste-genotype
 # target : out/genotypes/merged/$PREFIX$.genotypes.bcf out/genotypes/merged/$PREFIX$.genotypes.bcf.csi out/genotypes/minDP0/$PREFIX$.gtonly.minDP0.bcf out/genotypes/minDP0/$PREFIX$.gtonly.minDP0.bcf.csi out/genotypes/minDP10/$PREFIX$.gtonly.minDP10.bcf out/genotypes/minDP10/$PREFIX$.gtonly.minDP10.bcf.csi out/genotypes/hgdp/$PREFIX$.gtonly.minDP0.hgdp.bcf out/genotypes/hgdp/$PREFIX$.gtonly.minDP0.hgdp.bcf.csi
-mkdir --p out/genotypes/merged/$INTERVAL$1$/
-mkdir --p out/genotypes/minDP0/$INTERVAL$1$/
-mkdir --p out/genotypes/minDP10/$INTERVAL$1$/
-mkdir --p out/genotypes/hgdp/$INTERVAL$1$/
+mkdir -p out/genotypes/merged/$INTERVAL$1$/
+mkdir -p out/genotypes/minDP0/$INTERVAL$1$/
+mkdir -p out/genotypes/minDP10/$INTERVAL$1$/
+mkdir -p out/genotypes/hgdp/$INTERVAL$1$/
 cut -f 1,20 out/index/list.107.local.crams.vb_xy.index | tail -n +2 > out/genotypes/merged/$PREFIX$.sex_map.txt
 cat index/seq.batches.by.20.txt | xargs -I {} echo 'out/genotypes/batches/{}/b{}.$INTERVAL$1$_$INTERVAL$2$_$INTERVAL$3$.genotypes.bcf' > out/genotypes/merged/$PREFIX$.bcflist.txt
 $ROOT$/cramore/cramore vcf-paste-calls --vcf-list out/genotypes/merged/$PREFIX$.bcflist.txt --num-pc 0 --sex-map out/genotypes/merged/$PREFIX$.sex_map.txt --xLabel chrX --yLabel chrY --mtLabel chrM --xStart 2781479 --xStop 155701383 --skip-tmp-info --region $INTERVAL$1$:$INTERVAL$4$-$INTERVAL$5$ --out out/genotypes/merged/$PREFIX$.genotypes.bcf > out/genotypes/merged/$PREFIX$.genotypes.bcf.out 2> out/genotypes/merged/$PREFIX$.genotypes.bcf.err
