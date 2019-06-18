@@ -33,7 +33,7 @@ Installation
 -------------
 First, clone the repository by recursively cloning each submodule.
 ```
-   $ git clone --recurse-submodules -j8 https://github.com/statgen/topmed_variant_calling
+   $ git clone --recurse-submodules https://github.com/statgen/topmed_variant_calling
    (Use --recursive instead of --recurse-submodules for git version 2.12 or lower) 
 ```
 
@@ -45,6 +45,7 @@ Next, build each submodule using the following sets of commands
    $ cd bamUtil; make; cd ..
    $ cd invNorm; make; cd ..
    $ cd htslib; autoheader; autoconf; ./configure; make; cd ..
+   $ cd vt-topmed; make; cd ..
    $ cd cramore; autoreconf -vfi; ./configure; make; cd ..
    $ cd samtools; authoheader; autoconf -Wno-syntax; ./configure; make; cd ..
    $ cd bcftools; make; cd ..
