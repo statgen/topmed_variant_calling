@@ -25,3 +25,6 @@
 [submodule "libsvm"]
 	path = libsvm
 	url = https://github.com/cjlin1/libsvm
+[submodule "vt-topmed"]
+	path = vt-topmed
+	url = https://github.com/hyunminkang/vt-topmed
