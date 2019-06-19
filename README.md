@@ -47,7 +47,7 @@ Next, build each submodule using the following sets of commands
    $ cd htslib; autoheader; autoconf; ./configure; make; cd ..
    $ cd vt-topmed; make; cd ..
    $ cd cramore; autoreconf -vfi; ./configure; make; cd ..
-   $ cd samtools; authoheader; autoconf -Wno-syntax; ./configure; make; cd ..
+   $ cd samtools; autoheader; autoconf -Wno-syntax; ./configure; make; cd ..
    $ cd bcftools; make; cd ..
    $ cd king; g++ -O3 -c *.cpp; g++ -O3 -o king *.o -lz; cd ..
 ```
