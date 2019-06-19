@@ -33,4 +33,4 @@ RUN cd vt-topmed && make clean && make && cd ..
 RUN cd cramore && autoreconf -vfi && ./configure && make clean && make && cd ..
 RUN cd samtools && autoheader && autoconf -Wno-syntax && ./configure && make clean && make && cd ..
 RUN cd bcftools && make clean && make && cd ..
-RUN cd king && rm *.o && g++ -O3 -c *.cpp && g++ -O3 -o king *.o -lz && cd ..
+RUN cd king && rm -f *.o && g++ -O3 -c *.cpp && g++ -O3 -o king *.o -lz && cd ..
