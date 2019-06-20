@@ -209,7 +209,7 @@ Next, pasting the genotypes across all batches while recalculating the
 variant features is achieved using the following command:
 
 ```
-  $ ../apigenome/bin/cloudify --cmd ../scripts/run-paste-genotypes-local.cmd
+  $ ../apigenome/bin/cloudify --cmd ../scripts/run-paste-genotype-local.cmd
 ```
 
 Upon successful completion, we expect to see the following files.
