@@ -1,6 +1,6 @@
 # out : log/merge
 # list : INTERVAL : index/intervals/b38.intervals.X.10Mb.10Mb.txt
-# var : ROOT : /net/fantasia/home/hmkang/code/working/topmed_variant_calling/
+# var : ROOT : ..
 # var : PREFIX : out/union/union.$INTERVAL$1$_$INTERVAL$2$_$INTERVAL$3$
 # target : $PREFIX$.sites.bcf $PREFIX$.sites.bcf.csi
 # name: example-union
