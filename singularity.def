@@ -8,8 +8,6 @@ From: ubuntu:16.04
   export LC_ALL=C
 
 %post
-  cd /topmed_variant_calling
-
   apt-get update && apt-get install -y \
     apt-utils \
     automake \
@@ -26,6 +24,11 @@ From: ubuntu:16.04
     libzstd-dev \
     r-base \
     zlib1g-dev
+  
+  mkdir /tmp/plink && cd /tmp/plink && wget http://s3.amazonaws.com/plink1-assets/plink_linux_x86_64_20190617.zip && unzip plink_linux_x86_64_20190617.zip && cp plink /usr/local/bin/plink
+
+  cd /topmed_variant_calling
+  rm -r /tmp/plink
 
   git submodule init && git submodule update 
 
