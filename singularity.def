@@ -22,6 +22,7 @@ From: ubuntu:16.04
     libncurses5-dev \
     libssl-dev \
     libzstd-dev \
+    python3 \
     r-base \
     zlib1g-dev
   
@@ -32,14 +33,15 @@ From: ubuntu:16.04
 
   git submodule init && git submodule update 
 
-  cd libsvm/ && make clean && make && cd ..
-  cd apigenome && autoreconf -vfi && ./configure --prefix $PWD && make clean && make && make install && cd ..
-  cd libStatGen && make clean && make && cd ..
-  cd bamUtil && make clean && make && cd ..
-  cd invNorm && make clean && make && cd ..
-  cd htslib && autoheader && autoconf && ./configure && make clean && make && cd ..
-  cd vt-topmed && make clean && make && cd ..
-  cd cramore && autoreconf -vfi && ./configure && make clean && make && cd ..
-  cd samtools && autoheader && autoconf -Wno-syntax && ./configure && make clean && make && cd ..
-  cd bcftools && make clean && make && cd ..
-  cd king && rm -f *.o && g++ -O3 -c *.cpp && g++ -O3 -o king *.o -lz && cd ..
+  cd libsvm/ && git clean -fdx && make && cd ..
+  cd apigenome && git clean -fdx && autoreconf -vfi && ./configure --prefix $PWD && make && make install && cd ..
+  cd libStatGen && git clean -fdx && make && cd ..
+  cd bamUtil && git clean -fdx && make && cd ..
+  cd invNorm && git clean -fdx && make && cd ..
+  cd htslib && git clean -fdx && autoheader && autoconf && ./configure && make && cd ..
+  cd vt-topmed && git clean -fdx && make && cd ..
+  cd cramore && git clean -fdx && autoreconf -vfi && ./configure && make && cd ..
+  cd samtools && git clean -fdx && autoheader && autoconf -Wno-syntax && ./configure && make && cd ..
+  cd bcftools && git clean -fdx && make && cd ..
+  cd king && rm -f king *.o && g++ -O3 -c *.cpp && g++ -O3 -o king *.o -lz && cd ..
+
