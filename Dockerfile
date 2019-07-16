@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
   libncurses5-dev \
   libssl-dev \
   libzstd-dev \
+  python3 \
   r-base \
   unzip \
   wget \

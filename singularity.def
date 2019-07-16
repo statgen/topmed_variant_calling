@@ -22,6 +22,7 @@ From: ubuntu:16.04
     libncurses5-dev \
     libssl-dev \
     libzstd-dev \
+    python3 \
     r-base \
     zlib1g-dev
   
