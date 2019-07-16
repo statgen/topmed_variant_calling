@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y \
   wget \
   zlib1g-dev
 
-RUN mkdir /tmp/plink && cd /tmp/plink && wget http://s3.amazonaws.com/plink1-assets/plink_linux_x86_64_20190617.zip && unzip plink_linux_x86_64_20190617.zip && cp plink /usr/local/bin/plink
+RUN mkdir /tmp/plink && cd /tmp/plink && wget http://s3.amazonaws.com/plink1-assets/plink_linux_x86_64_20190617.zip && unzip plink_linux_x86_64_20190617.zip && cp plink /usr/local/bin/plink-1.9
 
 WORKDIR /topmed_variant_calling
 RUN rm -r /tmp/plink

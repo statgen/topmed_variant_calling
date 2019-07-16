@@ -26,7 +26,7 @@ From: ubuntu:16.04
     r-base \
     zlib1g-dev
   
-  mkdir /tmp/plink && cd /tmp/plink && wget http://s3.amazonaws.com/plink1-assets/plink_linux_x86_64_20190617.zip && unzip plink_linux_x86_64_20190617.zip && cp plink /usr/local/bin/plink
+  mkdir /tmp/plink && cd /tmp/plink && wget http://s3.amazonaws.com/plink1-assets/plink_linux_x86_64_20190617.zip && unzip plink_linux_x86_64_20190617.zip && cp plink /usr/local/bin/plink-1.9
 
   cd /topmed_variant_calling
   rm -r /tmp/plink
