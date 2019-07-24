@@ -1,0 +1,267 @@
+import os
+import math
+
+configfile: "config.yml"
+
+rule discover_bcf:
+    input:
+        config["input_expression"]
+    output:
+        "out/sm/{sample_id}/{sample_id}.bcf"
+        #"out/sm/{sample_id}/{sample_id}.bcf.csi"
+    shell:
+        """
+        set +e
+
+        tmp_dir=/tmp/snk_`head -c 8 <(pwd | md5sum)`_discover_{wildcards.sample_id}
+        mkdir -p $tmp_dir
+
+        set -o pipefail 
+        export REF_PATH={config[exe_root]}/resources/ref/md5/%2s/%2s/%s 
+        {config[exe_root]}/samtools/samtools view -uh -T {config[exe_root]}/resources/ref/hs38DH.fa {input} 2> $tmp_dir/{wildcards.sample_id}.bcf.samtools_err \
+          | {config[exe_root]}/bamUtil/bin/bam clipoverlap --poolSize 100000000 --in -.ubam --out -.ubam 2> $tmp_dir/{wildcards.sample_id}.bcf.bamUtil_err \
+          | {config[exe_root]}/vt-topmed/vt discover2 -z -q 20 -b + -r {config[exe_root]}/resources/ref/hs38DH.fa -s {wildcards.sample_id} -o $tmp_dir/{wildcards.sample_id}.bcf 2> $tmp_dir/{wildcards.sample_id}.bcf.vt_err
+        rc=$?
+        
+        if [[ $rc == 0 ]]; then 
+          {config[exe_root]}/bcftools/bcftools index -f $tmp_dir/{wildcards.sample_id}.bcf
+          rc=$?
+        fi
+        
+        mv $tmp_dir/*_err out/sm/{wildcards.sample_id}/        
+        if [[ $rc == 0 ]]; then 
+          mv $tmp_dir/{wildcards.sample_id}.bcf $tmp_dir/{wildcards.sample_id}.bcf.csi out/sm/{wildcards.sample_id}/
+          rc=$?
+        fi
+
+        rm -r $tmp_dir
+        exit $rc
+        """
+        
+rule sample_qc:
+    input:
+        config["input_expression"]
+    output:
+        "out/sm/{sample_id}/{sample_id}.vb2"
+    shell:
+        """
+        set +e
+
+        tmp_dir=/tmp/snk_`head -c 8 <(pwd | md5sum)`_vb2_{wildcards.sample_id}
+        mkdir -p $tmp_dir
+
+        export REF_PATH={config[exe_root]}/resources/ref/md5/%2s/%2s/%s
+        
+        {config[exe_root]}/cramore/cramore cram-verify-bam \
+          --svd {config[exe_root]}/resources/ref/HGDP_938.b38.genotypes.svd \
+          --sam {input} \
+          --cap-DP 100 \
+          --out $tmp_dir/{wildcards.sample_id}.vb2 \
+          --num-PC 4 \
+          > $tmp_dir/{wildcards.sample_id}.vb2.stdout \
+          2> $tmp_dir/{wildcards.sample_id}.vb2.stderr
+        rc=$?
+
+        mv $tmp_dir/*.stderr $tmp_dir/*.stdout out/sm/{wildcards.sample_id}/
+        if [[ $rc == 0 ]]; then
+          mv $tmp_dir/{wildcards.sample_id}.vb2 out/sm/{wildcards.sample_id}/
+          rc=$?
+        fi
+
+        rm -r $tmp_dir
+        exit $rc
+        """
+
+rule discover_bcf_xy_depths:
+    input:
+        "out/sm/{sample_id}/{sample_id}.bcf"
+    output:
+        "out/sm/{sample_id}/{sample_id}.norm.xy"
+    shell:
+        """
+        set +e
+        
+        tmp_dir=/tmp/snk_`head -c 8 <(pwd | md5sum)`_norm_{wildcards.sample_id}
+        mkdir -p $tmp_dir
+
+        export REF_PATH={config[exe_root]}/resources/ref/md5/%2s/%2s/%s
+
+        {config[exe_root]}/cramore/cramore vcf-normalize-depth --xy \
+          --vcf {input} \
+          --known {config[exe_root]}/resources/ref/1000G_omni2.5.b38.sites.PASS.vcf.gz \
+          --gc {config[exe_root]}/resources/ref/hs38DH.gc.w150.s5.gz \
+          --xLabel chrX \
+          --yLabel chrY \
+          --xStart 2781479 \
+          --xStop 15570138 \
+          --out $tmp_dir/{wildcards.sample_id}.norm \
+          > $tmp_dir/{wildcards.sample_id}.norm.out \
+          2> $tmp_dir/{wildcards.sample_id}.norm.err
+        rc=$?
+
+        mv $tmp_dir/*.out $tmp_dir/*.err out/sm/{wildcards.sample_id}/
+        if [[ $rc == 0 ]]; then
+          mv $tmp_dir/{wildcards.sample_id}.norm.xy out/sm/{wildcards.sample_id}/
+          rc=$?
+        fi
+
+        rm -r $tmp_dir
+        exit $rc
+        """
+
+def get_batch_sample_ids(wc):
+    batch_size = config["batch_size"]
+    beg = batch_size * int(wc.batch)
+    end = beg + batch_size
+    return config["sample_ids"][beg:end]
+
+def get_batch_cram_files(wc):
+    batch_size = config["batch_size"]
+    beg = batch_size * int(wc.batch)
+    end = beg + batch_size
+    return [config["input_expression"].format(sample_id=sid) for sid in config["sample_ids"][beg:end]]
+
+
+def get_batch_norm_files(wc):
+    return ["out/sm/" + sid + "/" + sid + ".norm.xy" for sid in get_batch_sample_ids(wc)]
+
+def get_batch_vb_files(wc):
+    return ["out/sm/" + sid + "/" + sid + ".vb2" for sid in get_batch_sample_ids(wc)]
+
+rule group_vb_xy_table:
+    input:
+        get_batch_norm_files, get_batch_vb_files
+    params:
+        cram_files = get_batch_cram_files,
+        sample_ids = get_batch_sample_ids
+    output:
+        cram_list = "out/index/cram_list_b{batch}.tsv",
+        table = "out/index/vb_xy_{batch}.tsv"
+    shell:
+        """
+        #set +e
+        echo "HERE!!!!"
+        tmp_dir=`mktemp -d`
+        echo "tmp_dir: ${{tmp_dir}}"
+
+        echo {params.sample_ids} | xargs -n1 > $tmp_dir/ids.txt
+        echo $tmp_dir/ids.txt
+        echo {params.cram_files} | xargs -n1 > $tmp_dir/paths.txt
+        echo $tmp_dir/paths.txt
+        paste $tmp_dir/ids.txt $tmp_dir/paths.txt > {output.cram_list}
+        {config[exe_root]}/apigenome/bin/cram-vb-xy-index --index {output.cram_list} --dir out/sm --out {output.table}
+        rc=$?
+        rm -r $tmp_dir
+        exit $rc
+        """
+
+rule batch_site_list:
+    input:
+       "out/index/vb_xy_{batch}.tsv"
+    output:
+        "out/union/b{batch}/b{batch}_{chrom}_{region}.merged.sites.bcf"
+    shell:
+        """
+        set +e
+
+        tmp_dir=/tmp/snk_`head -c 8 <(pwd | md5sum)`_$(basename {output} .bcf)
+        mkdir -p $tmp_dir
+
+        {config[exe_root]}/cramore/cramore vcf-merge-candidate-variants \
+          --in-vcf-list <(cut -f 3 {input} | tail -n+2) \
+          --region "{wildcards.chrom}:{wildcards.region}" \
+          --out-vcf $tmp_dir/out.bcf \
+          > $tmp_dir/out.bcf.out \
+          2> $tmp_dir/out.bcf.err \
+        && {config[exe_root]}/bcftools/bcftools index $tmp_dir/out.bcf
+        
+        rc=$?
+        
+        mv $tmp_dir/out.bcf.out {output}.out
+        mv $tmp_dir/out.bcf.err {output}.err
+        if [[ $rc == 0 ]]; then
+          mv $tmp_dir/out.bcf {output} && mv $tmp_dir/out.bcf.csi {output}.csi
+          rc=$?
+        fi
+
+
+        rm -r $tmp_dir
+        exit $rc
+        """
+
+def get_batch_site_files(wc):
+    num_batches = math.ceil(len(config["sample_ids"]) / config["batch_size"])
+    ret = []
+    for b in range(0, num_batches):
+        ret.append(("out/union/b{}/b{}_" + wc.chrom + "_" + wc.region + ".merged.sites.bcf").format(b,b))
+    return ret
+    
+
+rule union_site_list:
+    input:
+        get_batch_site_files
+    output:
+        "out/union/union.{chrom}_{region}.merged.sites.bcf",
+        "out/union/union.{chrom}_{region}.sites.bcf"
+    shell:
+        """
+        {config[exe_root]}/cramore/cramore vcf-merge-candidate-variants \
+          --in-vcf-list <(echo {input} | tr ' ' '\n') \
+          --region {wildcards.chrom}:{wildcards.region} \
+          --out-vcf {output[0]} \
+          > {output[0]}.out 2> {output[0]}.err
+
+        {config[exe_root]}/bcftools/bcftools index -f {output[0]}
+        {config[exe_root]}/vt-topmed/vt annotate_indels -r {config[exe_root]}/resources/ref/hs38DH.fa {output[0]} -o + 2> {output[0]}.annotate.err \
+          | {config[exe_root]}/vt-topmed/vt consolidate_variants + -o {output[1]} > {output[1]}.out 2> {output[1]}.err
+        {config[exe_root]}/bcftools/bcftools index -f {output[1]}
+        """
+
+rule genotyped_batch:
+    input:
+        cram_list = "out/index/cram_list_b{batch}.tsv",
+        sex_map = "out/index/vb_xy_{batch}.tsv",
+        sites_bcf = "out/union/union.{chrom}_{region}.sites.bcf"
+    output:
+        "out/genotypes/b{batch}/b{batch}.{chrom}_{region}.genotypes.bcf"
+    shell:
+        """
+        # out : log/batch-geno
+        # list : BATCH : index/seq.batches.by.20.txt
+        # list : INTERVAL : index/intervals/b38.intervals.X.10Mb.10Mb.txt
+        # var : ROOT : ..
+        # var : PREFIX : out/genotypes/batches/$BATCH$1$/b$BATCH$1$.$INTERVAL$1$_$INTERVAL$2$_$INTERVAL$3$
+        # name : example-batch-genotype
+        # target : $PREFIX$.genotypes.bcf $PREFIX$.genotypes.bcf.csi
+        #mkdir -p out/genotypes/batches/$BATCH$1$/
+        #cut -f 1,20 out/index/list.107.local.crams.vb_xy.index | tail -n +2 | tail -n +$BATCH$1$ | head -n 20 > $PREFIX$.sex_map.txt
+        #cut -f 1,2,5 out/index/list.107.local.crams.vb_xy.index | tail -n +2 | tail -n +$BATCH$1$ | head -n 20 > $PREFIX$.cram_index.txt
+        
+        export REF_PATH={config[exe_root]}/resources/ref/md5/%2s/%2s/%s 
+        {config[exe_root]}/cramore/cramore dense-genotype \
+          --in-cram-list {input.cram_list} \
+          --in-vcf {input.sites_bcf} \
+          --unit 6000000 \
+          --region {wildcards.chrom}:{wildcards.region} \
+          --sex-map {input.sex_map} \
+          --xLabel chrX \
+          --yLabel chrY \
+          --xStart 2781479 \
+          --xStop 155701383 \
+          --print-tmp-info \
+          --out {output} \
+          --min-mq 1 \
+          > {output}.out 2> {output}.err
+        
+        {config[exe_root]}/bcftools/bcftools index -f {output}
+        """
+
+rule entire_batch:
+    input:
+       ["out/genotypes/b{batch}/b{batch}.chr" + str(c) + "_1-" + str(0x7FFFFFFF) + ".genotypes.bcf" for c in list(range(1,23)) + ["X"]]
+    output:
+        "out/b{batch}.done"
+    shell:
+        """
+        touch {output}
+        """
