@@ -16,27 +16,28 @@ RUN apt-get update && apt-get install -y \
   libncurses5-dev \
   libssl-dev \
   libzstd-dev \
+  python3 \
   r-base \
   unzip \
   wget \
   zlib1g-dev
 
-RUN mkdir /tmp/plink && cd /tmp/plink && wget http://s3.amazonaws.com/plink1-assets/plink_linux_x86_64_20190617.zip && unzip plink_linux_x86_64_20190617.zip && cp plink /usr/local/bin/plink
+RUN mkdir /tmp/plink && cd /tmp/plink && wget http://s3.amazonaws.com/plink1-assets/plink_linux_x86_64_20190617.zip && unzip plink_linux_x86_64_20190617.zip && cp plink /usr/local/bin/plink-1.9
 
 WORKDIR /topmed_variant_calling
 RUN rm -r /tmp/plink
 
 RUN git submodule init && git submodule update 
 
-RUN cd libsvm/ && make clean && make && cd ..
-RUN cd apigenome && autoreconf -vfi && ./configure --prefix $PWD && make clean && make && make install && cd ..
-RUN cd libStatGen && make clean && make && cd ..
-RUN cd bamUtil && make clean && make && cd ..
-RUN cd invNorm && make clean && make && cd ..
-RUN cd htslib && autoheader && autoconf && ./configure && make clean && make && cd ..
-RUN cd vt-topmed && make clean && make && cd ..
-RUN cd cramore && autoreconf -vfi && ./configure && make clean && make && cd ..
-RUN cd samtools && autoheader && autoconf -Wno-syntax && ./configure && make clean && make && cd ..
-RUN cd bcftools && make clean && make && cd ..
-RUN cd king && rm -f *.o && g++ -O3 -c *.cpp && g++ -O3 -o king *.o -lz && cd ..
+RUN cd libsvm/ && git clean -fdx && make && cd ..
+RUN cd apigenome && git clean -fdx && autoreconf -vfi && ./configure --prefix $PWD && make && make install && cd ..
+RUN cd libStatGen && git clean -fdx && make && cd ..
+RUN cd bamUtil && git clean -fdx && make && cd ..
+RUN cd invNorm && git clean -fdx && make && cd ..
+RUN cd htslib && git clean -fdx && autoheader && autoconf && ./configure && make && cd ..
+RUN cd vt-topmed && git clean -fdx && make && cd ..
+RUN cd cramore && git clean -fdx && autoreconf -vfi && ./configure && make && cd ..
+RUN cd samtools && git clean -fdx && autoheader && autoconf -Wno-syntax && ./configure && make && cd ..
+RUN cd bcftools && git clean -fdx && make && cd ..
+RUN cd king && rm -f king *.o && g++ -O3 -c *.cpp && g++ -O3 -o king *.o -lz && cd ..
 
