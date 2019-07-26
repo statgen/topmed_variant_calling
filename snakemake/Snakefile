@@ -9,6 +9,7 @@ rule discover_bcf:
     output:
         "out/sm/{sample_id}/{sample_id}.bcf"
         #"out/sm/{sample_id}/{sample_id}.bcf.csi"
+    threads: 2
     shell:
         """
         set +e
@@ -43,6 +44,7 @@ rule sample_qc:
         config["input_expression"]
     output:
         "out/sm/{sample_id}/{sample_id}.vb2"
+    threads: 1
     shell:
         """
         set +e
@@ -77,6 +79,7 @@ rule discover_bcf_xy_depths:
         "out/sm/{sample_id}/{sample_id}.bcf"
     output:
         "out/sm/{sample_id}/{sample_id}.norm.xy"
+    threads: 1
     shell:
         """
         set +e
@@ -137,6 +140,7 @@ rule group_vb_xy_table:
     output:
         cram_list = "out/index/cram_list_b{batch}.tsv",
         table = "out/index/vb_xy_{batch}.tsv"
+    threads: 1
     shell:
         """
         #set +e
@@ -160,6 +164,7 @@ rule batch_site_list:
        "out/index/vb_xy_{batch}.tsv"
     output:
         "out/union/b{batch}/b{batch}_{chrom}_{region}.merged.sites.bcf"
+    threads: 1
     shell:
         """
         set +e
@@ -203,6 +208,7 @@ rule union_site_list:
     output:
         "out/union/union.{chrom}_{region}.merged.sites.bcf",
         "out/union/union.{chrom}_{region}.sites.bcf"
+    threads: 2
     shell:
         """
         {config[exe_root]}/cramore/cramore vcf-merge-candidate-variants \
@@ -224,6 +230,7 @@ rule genotyped_batch:
         sites_bcf = "out/union/union.{chrom}_{region}.sites.bcf"
     output:
         "out/genotypes/b{batch}/b{batch}.{chrom}_{region}.genotypes.bcf"
+    threads: 1
     shell:
         """
         # out : log/batch-geno
@@ -261,6 +268,7 @@ rule entire_batch:
        ["out/genotypes/b{batch}/b{batch}.chr" + str(c) + "_1-" + str(0x7FFFFFFF) + ".genotypes.bcf" for c in list(range(1,23)) + ["X"]]
     output:
         "out/b{batch}.done"
+    threads: 1
     shell:
         """
         touch {output}
