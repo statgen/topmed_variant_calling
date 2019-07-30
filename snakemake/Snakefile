@@ -18,10 +18,10 @@ rule discover_bcf:
         mkdir -p $tmp_dir
 
         set -o pipefail 
-        export REF_PATH={config[exe_root]}/resources/ref/md5/%2s/%2s/%s 
-        {config[exe_root]}/samtools/samtools view -uh -T {config[exe_root]}/resources/ref/hs38DH.fa {input} 2> $tmp_dir/{wildcards.sample_id}.bcf.samtools_err \
+        export REF_PATH=resources/ref/md5/%2s/%2s/%s 
+        {config[exe_root]}/samtools/samtools view -uh -T resources/ref/hs38DH.fa {input} 2> $tmp_dir/{wildcards.sample_id}.bcf.samtools_err \
           | {config[exe_root]}/bamUtil/bin/bam clipoverlap --poolSize 100000000 --in -.ubam --out -.ubam 2> $tmp_dir/{wildcards.sample_id}.bcf.bamUtil_err \
-          | {config[exe_root]}/vt-topmed/vt discover2 -z -q 20 -b + -r {config[exe_root]}/resources/ref/hs38DH.fa -s {wildcards.sample_id} -o $tmp_dir/{wildcards.sample_id}.bcf 2> $tmp_dir/{wildcards.sample_id}.bcf.vt_err
+          | {config[exe_root]}/vt-topmed/vt discover2 -z -q 20 -b + -r resources/ref/hs38DH.fa -s {wildcards.sample_id} -o $tmp_dir/{wildcards.sample_id}.bcf 2> $tmp_dir/{wildcards.sample_id}.bcf.vt_err
         rc=$?
         
         if [[ $rc == 0 ]]; then 
@@ -52,10 +52,10 @@ rule sample_qc:
         tmp_dir=/tmp/snk_`head -c 8 <(pwd | md5sum)`_vb2_{wildcards.sample_id}
         mkdir -p $tmp_dir
 
-        export REF_PATH={config[exe_root]}/resources/ref/md5/%2s/%2s/%s
+        export REF_PATH=resources/ref/md5/%2s/%2s/%s
         
         {config[exe_root]}/cramore/cramore cram-verify-bam \
-          --svd {config[exe_root]}/resources/ref/HGDP_938.b38.genotypes.svd \
+          --svd resources/ref/HGDP_938.b38.genotypes.svd \
           --sam {input} \
           --cap-DP 100 \
           --out $tmp_dir/{wildcards.sample_id}.vb2 \
@@ -87,12 +87,12 @@ rule discover_bcf_xy_depths:
         tmp_dir=/tmp/snk_`head -c 8 <(pwd | md5sum)`_norm_{wildcards.sample_id}
         mkdir -p $tmp_dir
 
-        export REF_PATH={config[exe_root]}/resources/ref/md5/%2s/%2s/%s
+        export REF_PATH=resources/ref/md5/%2s/%2s/%s
 
         {config[exe_root]}/cramore/cramore vcf-normalize-depth --xy \
           --vcf {input} \
-          --known {config[exe_root]}/resources/ref/1000G_omni2.5.b38.sites.PASS.vcf.gz \
-          --gc {config[exe_root]}/resources/ref/hs38DH.gc.w150.s5.gz \
+          --known resources/ref/1000G_omni2.5.b38.sites.PASS.vcf.gz \
+          --gc resources/ref/hs38DH.gc.w150.s5.gz \
           --xLabel chrX \
           --yLabel chrY \
           --xStart 2781479 \
@@ -218,7 +218,7 @@ rule union_site_list:
           > {output[0]}.out 2> {output[0]}.err
 
         {config[exe_root]}/bcftools/bcftools index -f {output[0]}
-        {config[exe_root]}/vt-topmed/vt annotate_indels -r {config[exe_root]}/resources/ref/hs38DH.fa {output[0]} -o + 2> {output[0]}.annotate.err \
+        {config[exe_root]}/vt-topmed/vt annotate_indels -r resources/ref/hs38DH.fa {output[0]} -o + 2> {output[0]}.annotate.err \
           | {config[exe_root]}/vt-topmed/vt consolidate_variants + -o {output[1]} > {output[1]}.out 2> {output[1]}.err
         {config[exe_root]}/bcftools/bcftools index -f {output[1]}
         """
@@ -244,7 +244,7 @@ rule genotyped_batch:
         #cut -f 1,20 out/index/list.107.local.crams.vb_xy.index | tail -n +2 | tail -n +$BATCH$1$ | head -n 20 > $PREFIX$.sex_map.txt
         #cut -f 1,2,5 out/index/list.107.local.crams.vb_xy.index | tail -n +2 | tail -n +$BATCH$1$ | head -n 20 > $PREFIX$.cram_index.txt
         
-        export REF_PATH={config[exe_root]}/resources/ref/md5/%2s/%2s/%s 
+        export REF_PATH=resources/ref/md5/%2s/%2s/%s 
         {config[exe_root]}/cramore/cramore dense-genotype \
           --in-cram-list {input.cram_list} \
           --in-vcf {input.sites_bcf} \
