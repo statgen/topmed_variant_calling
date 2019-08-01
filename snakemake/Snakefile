@@ -76,7 +76,7 @@ rule sample_qc:
 
 rule discover_bcf_xy_depths:
     input:
-        "out/sm/{sample_id}/{sample_id}.bcf"
+        rules.discover_bcf.output #"out/sm/{sample_id}/{sample_id}.bcf"
     output:
         "out/sm/{sample_id}/{sample_id}.norm.xy"
     threads: 1
@@ -161,7 +161,7 @@ rule group_vb_xy_table:
 
 rule batch_site_list:
     input:
-       "out/index/vb_xy_{batch}.tsv"
+       rules.group_vb_xy_table.output.table #"out/index/vb_xy_{batch}.tsv"
     output:
         "out/union/b{batch}/b{batch}_{chrom}_{region}.merged.sites.bcf"
     threads: 1
@@ -223,11 +223,32 @@ rule union_site_list:
         {config[exe_root]}/bcftools/bcftools index -f {output[1]}
         """
 
+def get_regions_for_contig(c_length, region_size):
+    ret = []
+    num_regions = int(math.ceil(c_length / region_size))
+    for i in range(0, num_regions):
+        start = i * region_size
+        end = start + region_size
+        ret.append(str(start + 1) + "-" + str(min(end, c_length)))
+    return ret
+
+def get_region_strings(contigs):
+    ret = []
+    region_size = config["region_size"]
+    for c, c_length in contigs.items():
+        for r in get_regions_for_contig(c_length, region_size):
+            ret.append(c + "_" + r)
+    return ret
+
+rule all_union_site_lists:
+    input:
+        ["out/union/union." + r + ".sites.bcf" for r in get_region_strings(config["contigs"])]
+
 rule genotyped_batch:
     input:
-        cram_list = "out/index/cram_list_b{batch}.tsv",
-        sex_map = "out/index/vb_xy_{batch}.tsv",
-        sites_bcf = "out/union/union.{chrom}_{region}.sites.bcf"
+        cram_list = rules.group_vb_xy_table.output.cram_list, #"out/index/cram_list_b{batch}.tsv",
+        sex_map = rules.group_vb_xy_table.output.table, #"out/index/vb_xy_{batch}.tsv",
+        sites_bcf = rules.union_site_list.output[1] #"out/union/union.{chrom}_{region}.sites.bcf"
     output:
         "out/genotypes/b{batch}/b{batch}.{chrom}_{region}.genotypes.bcf"
     threads: 1
@@ -265,7 +286,7 @@ rule genotyped_batch:
 
 rule entire_batch:
     input:
-       ["out/genotypes/b{batch}/b{batch}.chr" + str(c) + "_1-" + str(0x7FFFFFFF) + ".genotypes.bcf" for c in list(range(1,23)) + ["X"]]
+       ["out/genotypes/b{batch}/b{batch}." + r + ".genotypes.bcf" for r in get_region_strings(config["contigs"])]
     output:
         "out/b{batch}.done"
     threads: 1
@@ -273,3 +294,7 @@ rule entire_batch:
         """
         touch {output}
         """
+
+rule all_batches:
+    input:
+        ["out/b" + str(b) + ".done" for b in range(0, math.ceil(len(config["sample_ids"]) / config["batch_size"]))]
