@@ -1,5 +1,8 @@
 import os
 import math
+#import pdb
+
+#pdb.set_trace()
 
 configfile: "config.yml"
 
@@ -144,9 +147,7 @@ rule group_vb_xy_table:
     shell:
         """
         #set +e
-        echo "HERE!!!!"
         tmp_dir=`mktemp -d`
-        echo "tmp_dir: ${{tmp_dir}}"
 
         echo {params.sample_ids} | xargs -n1 > $tmp_dir/ids.txt
         echo $tmp_dir/ids.txt
@@ -242,7 +243,7 @@ def get_region_strings(contigs):
 
 rule all_union_site_lists:
     input:
-        ["out/union/union." + r + ".sites.bcf" for r in get_region_strings(config["contigs"])]
+        [ancient("out/union/union." + r + ".sites.bcf") for r in get_region_strings(config["contigs"])]
 
 rule genotyped_batch:
     input:
@@ -298,3 +299,112 @@ rule entire_batch:
 rule all_batches:
     input:
         ["out/b" + str(b) + ".done" for b in range(0, math.ceil(len(config["sample_ids"]) / config["batch_size"]))]
+
+rule pasted_genotype_region:
+    input:
+        ["out/genotypes/b"+ str(b) + "/b" + str(b) + ".{chrom}_{region}.genotypes.bcf" for b in range(0, math.ceil(len(config["sample_ids"]) / config["batch_size"]))]
+    output:
+        "out/genotypes/merged/{chrom}/merged.{chrom}_{region}.genotypes.bcf"
+    threads: 1
+    shell:
+        """
+        # out : log/paste-geno
+        # list : INTERVAL : index/intervals/b38.intervals.X.10Mb.1Mb.txt
+        # var : ROOT : ..
+        # var : PREFIX : $INTERVAL$1$/merged.$INTERVAL$1$_$INTERVAL$4$_$INTERVAL$5$
+        # name : example-paste-genotype
+        # target : out/genotypes/merged/$PREFIX$.genotypes.bcf out/genotypes/merged/$PREFIX$.genotypes.bcf.csi out/genotypes/minDP0/$PREFIX$.gtonly.minDP0.bcf out/genotypes/minDP0/$PREFIX$.gtonly.minDP0.bcf.csi out/genotypes/minDP10/$PREFIX$.gtonly.minDP10.bcf out/genotypes/minDP10/$PREFIX$.gtonly.minDP10.bcf.csi out/genotypes/hgdp/$PREFIX$.gtonly.minDP0.hgdp.bcf out/genotypes/hgdp/$PREFIX$.gtonly.minDP0.hgdp.bcf.csi
+
+        tmp_dir=`mktemp -d`
+
+        mkdir -p out/genotypes/merged/{wildcards.chrom}/
+        mkdir -p out/genotypes/minDP0/{wildcards.chrom}/
+        mkdir -p out/genotypes/minDP10/{wildcards.chrom}/
+        mkdir -p out/genotypes/hgdp/{wildcards.chrom}/
+        
+        cut -f1,20 `ls -v out/index/vb_xy_*.tsv` | grep -v "^SAMPLE_ID" > ${{tmp_dir}}/sex_map.txt
+        echo {input} | tr ' ' '\n' > ${{tmp_dir}}/merged.bcflist.txt
+ 
+        merged_file=${{tmp_dir}}/$(basename {output})
+
+        {config[exe_root]}/cramore/cramore vcf-paste-calls \
+          --vcf-list ${{tmp_dir}}/merged.bcflist.txt \
+          --num-pc 0 \
+          --sex-map ${{tmp_dir}}/sex_map.txt \
+          --xLabel chrX --yLabel chrY \
+          --mtLabel chrM \
+          --xStart 2781479 --xStop 155701383 \
+          --skip-tmp-info \
+          --region {wildcards.chrom}:{wildcards.region} \
+          --out ${{merged_file}} \
+          > ${{merged_file}}.out 2> ${{merged_file}}.err &&
+        {config[exe_root]}/bcftools/bcftools index -f ${{merged_file}}
+        rc=$?
+        mv ${{merged_file}}.out ${{merged_file}}.err $(dirname {output})/
+        
+        if [[ $rc == 0 ]]; then
+          mv ${{merged_file}} ${{merged_file}}.csi $(dirname {output})/
+        fi
+        rm -r ${{tmp_dir}}
+        exit $rc
+        """
+
+rule mindp_region:
+    input:
+        rules.pasted_genotype_region.output
+    output:
+        "out/genotypes/minDP{min_dp}/{chrom}/merged.{chrom}_{region}.gtonly.minDP{min_dp}.bcf"
+    threads: 1
+    shell: 
+        """
+        tmp_dir=`mktemp -d`
+
+        mindp_file=${{tmp_dir}}/$(basename {output})
+        {config[exe_root]}/cramore/cramore vcf-squeeze \
+          --in {input} \
+          --minDP {wildcards.min_dp} \
+          --out ${{mindp_file}} \
+          > ${{mindp_file}}.out 2> ${{mindp_file}}.err &&
+        {config[exe_root]}/bcftools/bcftools index -f ${{mindp_file}}
+        rc=$?
+        mv ${{mindp_file}}.out ${{mindp_file}}.err $(dirname {output})/
+
+        if [[ $rc == 0 ]]; then
+          mv ${{mindp_file}} ${{mindp_file}}.csi $(dirname {output})/
+        fi
+        rm -r ${{tmp_dir}}
+        exit $rc
+        """
+
+rule hgdp_region:
+    input:
+        "out/genotypes/minDP0/{chrom}/merged.{chrom}_{region}.gtonly.minDP0.bcf"
+    output:
+        "out/genotypes/hgdp/{chrom}/merged.{chrom}_{region}.gtonly.minDP0.hgdp.bcf"
+    threads: 1
+    shell:
+        """
+        set +e
+
+        tmp_dir=`mktemp -d`
+        hgdp_file=${{tmp_dir}}/$(basename {output})
+
+        {config[exe_root]}/cramore/cramore vcf-extract \
+          --vcf {input} \
+          --site resources/ref/HGDP_938.hg38.sites.vcf.gz \
+          --out ${{hgdp_file}} \
+          > ${{hgdp_file}}.out 2> ${{hgdp_file}}.err &&
+        {config[exe_root]}/bcftools/bcftools index -f ${{hgdp_file}}
+        rc=$?
+        mv ${{hgdp_file}}.out ${{hgdp_file}}.err $(dirname {output})/
+
+        if [[ $rc == 0 ]]; then
+          mv ${{hgdp_file}} ${{hgdp_file}}.csi $(dirname {output})/
+        fi
+        rm -r ${{tmp_dir}}
+        exit $rc
+        """
+
+rule all_pasted_genotypes:
+    input:
+        ["out/genotypes/hgdp/" + r.split("_")[0] + "/merged." + r + ".gtonly.minDP0.hgdp.bcf" for r in get_region_strings(config["contigs"])] + ["out/genotypes/minDP10/" + r.split("_")[0] + "/merged." + r + ".gtonly.minDP10.bcf" for r in get_region_strings(config["contigs"])]
