@@ -265,24 +265,38 @@ rule genotyped_batch:
         #mkdir -p out/genotypes/batches/$BATCH$1$/
         #cut -f 1,20 out/index/list.107.local.crams.vb_xy.index | tail -n +2 | tail -n +$BATCH$1$ | head -n 20 > $PREFIX$.sex_map.txt
         #cut -f 1,2,5 out/index/list.107.local.crams.vb_xy.index | tail -n +2 | tail -n +$BATCH$1$ | head -n 20 > $PREFIX$.cram_index.txt
-        
+        tmp_dir=`mktemp -d`
+        set +e
+
+        cut -f 1,20 {input.sex_map} | grep -v "^SAMPLE_ID" > ${{tmp_dir}}/sex_map.txt
+        cut -f 1,2,5 {input.sex_map} | grep -v "^SAMPLE_ID" > ${{tmp_dir}}/cram_index.txt
+       
+        tmp_out=${{tmp_dir}}/$(basename {output})
+ 
         export REF_PATH=resources/ref/md5/%2s/%2s/%s 
         {config[exe_root]}/cramore/cramore dense-genotype \
-          --in-cram-list {input.cram_list} \
+          --in-cram-list ${{tmp_dir}}/cram_index.txt \
           --in-vcf {input.sites_bcf} \
           --unit 6000000 \
           --region {wildcards.chrom}:{wildcards.region} \
-          --sex-map {input.sex_map} \
+          --sex-map ${{tmp_dir}}/sex_map.txt \
           --xLabel chrX \
           --yLabel chrY \
           --xStart 2781479 \
           --xStop 155701383 \
           --print-tmp-info \
-          --out {output} \
+          --out ${{tmp_out}} \
           --min-mq 1 \
-          > {output}.out 2> {output}.err
-        
-        {config[exe_root]}/bcftools/bcftools index -f {output}
+          > ${{tmp_out}}.out 2> ${{tmp_out}}.err &&
+        {config[exe_root]}/bcftools/bcftools index -f ${{tmp_out}}
+        rc=$?
+        mv ${{tmp_out}}.out ${{tmp_out}}.err $(dirname {output})/
+        if [[ $rc == 0 ]]; then
+          mv ${{tmp_out}} ${{tmp_out}}.csi $(dirname {output})/
+          rc=$?
+        fi
+        rm -r $tmp_dir
+        exit $rc
         """
 
 rule entire_batch:
@@ -314,13 +328,13 @@ rule pasted_genotype_region:
         # var : PREFIX : $INTERVAL$1$/merged.$INTERVAL$1$_$INTERVAL$4$_$INTERVAL$5$
         # name : example-paste-genotype
         # target : out/genotypes/merged/$PREFIX$.genotypes.bcf out/genotypes/merged/$PREFIX$.genotypes.bcf.csi out/genotypes/minDP0/$PREFIX$.gtonly.minDP0.bcf out/genotypes/minDP0/$PREFIX$.gtonly.minDP0.bcf.csi out/genotypes/minDP10/$PREFIX$.gtonly.minDP10.bcf out/genotypes/minDP10/$PREFIX$.gtonly.minDP10.bcf.csi out/genotypes/hgdp/$PREFIX$.gtonly.minDP0.hgdp.bcf out/genotypes/hgdp/$PREFIX$.gtonly.minDP0.hgdp.bcf.csi
-
+        set +e
         tmp_dir=`mktemp -d`
 
-        mkdir -p out/genotypes/merged/{wildcards.chrom}/
-        mkdir -p out/genotypes/minDP0/{wildcards.chrom}/
-        mkdir -p out/genotypes/minDP10/{wildcards.chrom}/
-        mkdir -p out/genotypes/hgdp/{wildcards.chrom}/
+        #mkdir -p out/genotypes/merged/{wildcards.chrom}/
+        #mkdir -p out/genotypes/minDP0/{wildcards.chrom}/
+        #mkdir -p out/genotypes/minDP10/{wildcards.chrom}/
+        #mkdir -p out/genotypes/hgdp/{wildcards.chrom}/
         
         cut -f1,20 `ls -v out/index/vb_xy_*.tsv` | grep -v "^SAMPLE_ID" > ${{tmp_dir}}/sex_map.txt
         echo {input} | tr ' ' '\n' > ${{tmp_dir}}/merged.bcflist.txt
@@ -344,6 +358,7 @@ rule pasted_genotype_region:
         
         if [[ $rc == 0 ]]; then
           mv ${{merged_file}} ${{merged_file}}.csi $(dirname {output})/
+          rc=$?
         fi
         rm -r ${{tmp_dir}}
         exit $rc
@@ -357,6 +372,7 @@ rule mindp_region:
     threads: 1
     shell: 
         """
+        set +e
         tmp_dir=`mktemp -d`
 
         mindp_file=${{tmp_dir}}/$(basename {output})
@@ -371,6 +387,7 @@ rule mindp_region:
 
         if [[ $rc == 0 ]]; then
           mv ${{mindp_file}} ${{mindp_file}}.csi $(dirname {output})/
+          rc=$?
         fi
         rm -r ${{tmp_dir}}
         exit $rc
@@ -385,7 +402,6 @@ rule hgdp_region:
     shell:
         """
         set +e
-
         tmp_dir=`mktemp -d`
         hgdp_file=${{tmp_dir}}/$(basename {output})
 
@@ -400,6 +416,7 @@ rule hgdp_region:
 
         if [[ $rc == 0 ]]; then
           mv ${{hgdp_file}} ${{hgdp_file}}.csi $(dirname {output})/
+          rc=$?
         fi
         rm -r ${{tmp_dir}}
         exit $rc
@@ -408,3 +425,135 @@ rule hgdp_region:
 rule all_pasted_genotypes:
     input:
         ["out/genotypes/hgdp/" + r.split("_")[0] + "/merged." + r + ".gtonly.minDP0.hgdp.bcf" for r in get_region_strings(config["contigs"])] + ["out/genotypes/minDP10/" + r.split("_")[0] + "/merged." + r + ".gtonly.minDP10.bcf" for r in get_region_strings(config["contigs"])]
+
+def get_autosome_region_strings(contigs, autosome_contigs):
+    ret = []
+    region_size = config["region_size"]
+    for c in autosome_contigs:
+        for r in get_regions_for_contig(contigs[c], region_size):
+            ret.append(c + "_" + r)
+    return ret
+
+rule concatenated_hgdp_autosomes:
+    input:
+        ["out/genotypes/hgdp/" + r.split("_")[0] + "/merged." + r + ".gtonly.minDP0.hgdp.bcf" for r in get_autosome_region_strings(config["contigs"], config["autosome_contigs"])]
+    output:
+        "out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.bcf"
+    threads: 1
+    shell:
+        """
+        {config[exe_root]}/bcftools/bcftools concat -n -Ob -o {output} {input}
+        """
+
+rule autosomes_bed_file:
+    input: rules.concatenated_hgdp_autosomes.output
+    output: "out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.plink.bed"
+    shell: 
+        """
+        output_file={output}
+        plink-1.9 --bcf {input} --make-bed --out ${{output_file%.bed}} --allow-extra-chr
+        """
+
+rule kinship:
+    input: rules.autosomes_bed_file.output
+    output: "out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.king.kin0"
+    threads: 1
+    shell:
+        """
+        output_file={output}
+        {config[exe_root]}/king/king -b {input} --degree 4 --kinship --prefix ${{output_file%.kin0}}
+        """
+
+rule pedigree:
+    input: rules.kinship.output
+    output: "out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.king.inferred.ped"
+    threads: 1
+    shell:
+        """
+        cut -f1,20 `ls -v out/index/vb_xy_*.tsv` | grep -v "^SAMPLE_ID" > out/index/sex_map.txt
+        {config[exe_root]}/apigenome/bin/vcf-infer-ped --kin0 {input} --sex out/index/sex_map.txt --out {output}
+        """
+
+rule milk_filtered_region:
+    input: 
+        pedigree = rules.pedigree.output,
+        bcf = "out/genotypes/merged/{chrom}/merged.{chrom}_{region}.genotypes.bcf"
+    output:
+        "out/milk/{chrom}/milk.{chrom}_{region}.full.vcf.gz"
+    threads: 1
+    shell:
+        """
+        set +e
+        tmp_dir=`mktemp -d`
+        tmp_out=${{tmp_dir}}/$(basename {output})
+
+        {config[exe_root]}/vt-topmed/vt milk_filter \
+          -f {input.pedigree} \
+          -b {input.bcf} \
+          -o ${{tmp_out}} \
+          -g out/index/sex_map.txt \
+          --xLabel chrX --yLabel chrY --mtLabel chrM \
+          --xStart 2781479 --xStop 155701383 \
+          --af-field AF &&
+        zcat ${{tmp_out}} | cut -f 1-8 | {config[exe_root]}/htslib/bgzip -c > ${{tmp_dir}}/$(basename {output} .full.vcf.gz).sites.vcf.gz
+        rc=$?
+        
+        if [[ $rc == 0 ]]; then
+          mv ${{tmp_dir}}/* $(dirname {output})/
+          rc=$?
+        fi
+        
+        rm -r ${{tmp_dir}}
+        exit $rc
+        """
+
+def get_concatenated_milk_chromome_input(wc):
+    return ["out/milk/" + wc.chrom + "/milk." + wc.chrom + "_" + r + ".full.vcf.gz" for r in get_regions_for_contig(config["contigs"][wc.chrom], config["milk_region_size"])]
+
+rule concatenated_milk_chromosome:
+    input:
+       get_concatenated_milk_chromome_input
+    output:
+       "out/milk/milk.{chrom}.sites.vcf.gz"
+    threads: 1
+    shell:
+        """
+        set +e
+        tmp_dir=`mktemp -d`
+        tmp_out=$tmp_dir/$(basename {output})
+
+        {config[exe_root]}/bcftools/bcftools concat {input} -Oz -o $tmp_out &&
+        {config[exe_root]}/htslib/tabix -f -pvcf $tmp_out
+        rc=$?
+        
+        if [[ $rc == 0 ]]; then
+          mv $tmp_dir/* $(dirname {output})/
+          rc=$?
+        fi
+
+        rm -r $tmp_dir
+        exit $rc
+        """
+
+rule all_concatenated_milk_chromosomes:
+    input:
+        ["out/milk/milk." + c + ".sites.vcf.gz" for c, l in config["contigs"].items()]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+foo = "bar"
+
