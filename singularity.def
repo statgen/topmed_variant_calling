@@ -39,9 +39,9 @@ From: ubuntu:16.04
   cd libStatGen && git clean -fdx && make && cd ..
   cd bamUtil && git clean -fdx && make && cd ..
   cd invNorm && git clean -fdx && make && cd ..
-  cd htslib && git clean -fdx && autoheader && autoconf && ./configure && make && make install && cd ..
+  cd htslib && git clean -fdx && autoheader && autoconf && ./configure && make && cd ..
   cd vt-topmed && git clean -fdx && make && cd ..
-  cd cramore && git clean -fdx && mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Release .. && make && cd ../..
+  cd cramore && git clean -fdx && mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INCLUDE_PATH=../htslib -DCMAKE_LIBRARY_PATH=../htslib .. && make && cd ../..
   cd samtools && git clean -fdx && autoheader && autoconf -Wno-syntax && ./configure && make && cd ..
   cd bcftools && git clean -fdx && make && cd ..
   cd king && rm -f king *.o && g++ -O3 -c *.cpp && g++ -O3 -o king *.o -lz && cd ..
