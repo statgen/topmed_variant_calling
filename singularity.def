@@ -8,6 +8,8 @@ From: ubuntu:16.04
   export LC_ALL=C
 
 %post
+  set -eu
+
   apt-get update && apt-get install -y \
     apt-utils \
     automake \
@@ -18,7 +20,7 @@ From: ubuntu:16.04
     ghostscript \
     gnuplot \
     groff \
-    libcurl4-openssl-dev \
+    libcurl4-gnutls-dev \
     liblzma-dev \
     libncurses5-dev \
     libssl-dev \
@@ -39,7 +41,7 @@ From: ubuntu:16.04
   cd libStatGen && git clean -fdx && make && cd ..
   cd bamUtil && git clean -fdx && make && cd ..
   cd invNorm && git clean -fdx && make && cd ..
-  cd htslib && git clean -fdx && autoheader && autoconf && ./configure && make && cd ..
+  cd htslib && git clean -fdx && autoheader && autoconf && ./configure --disable-libcurl && make && cd ..
   cd vt-topmed && git clean -fdx && make && cd ..
   cd cramore && git clean -fdx && mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INCLUDE_PATH=../htslib -DCMAKE_LIBRARY_PATH=../htslib .. && make && cd ../..
   cd samtools && git clean -fdx && autoheader && autoconf -Wno-syntax && ./configure && make && cd ..
