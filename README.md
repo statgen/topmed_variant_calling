@@ -80,7 +80,7 @@ download the following two sets of files.
 ```
 
 2. Download 107 CRAMs from the public GCS bucket.
-   The CRAM files are publicly available via FTP at
+   The CRAM files are publicly available at
    ``gs://topmed-irc-share/public``. However, if you want to access
    the data outside the Google Cloud, it will not be free of charge. 
    To download the files, you need to set the ``[PROJECT_ID]`` that is
