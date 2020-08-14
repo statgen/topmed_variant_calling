@@ -27,23 +27,86 @@ From: ubuntu:16.04
     libzstd-dev \
     python3 \
     r-base \
+    wget \
     zlib1g-dev
 
-  mkdir /tmp/plink && cd /tmp/plink && wget http://s3.amazonaws.com/plink1-assets/plink_linux_x86_64_20190617.zip && unzip plink_linux_x86_64_20190617.zip && cp plink /usr/local/bin/plink-1.9
-
   cd /topmed_variant_calling
-  rm -r /tmp/plink
 
-  git submodule init && git submodule update
+  git submodule init
+  git submodule update
 
-  cd libsvm/ && git clean -fdx && make && cd ..
-  cd apigenome && git clean -fdx && autoreconf -vfi && ./configure --prefix $PWD && make && make install && cd ..
-  cd libStatGen && git clean -fdx && make && cd ..
-  cd bamUtil && git clean -fdx && make && cd ..
-  cd invNorm && git clean -fdx && make && cd ..
-  cd htslib && git clean -fdx && autoheader && autoconf && ./configure --disable-libcurl && make && cd ..
-  cd vt-topmed && git clean -fdx && make && cd ..
-  cd cramore && git clean -fdx && mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INCLUDE_PATH=../htslib -DCMAKE_LIBRARY_PATH=../htslib .. && make && cd ../..
-  cd samtools && git clean -fdx && autoheader && autoconf -Wno-syntax && ./configure && make && cd ..
-  cd bcftools && git clean -fdx && make && cd ..
-  cd king && rm -f king *.o && g++ -O3 -c *.cpp && g++ -O3 -o king *.o -lz && cd ..
+  mkdir plink
+  cd plink/
+  wget http://s3.amazonaws.com/plink1-assets/plink_linux_x86_64_20190617.zip
+  unzip plink_linux_x86_64_20190617.zip
+  install -T plink /usr/local/bin/plink-1.9
+  cd ..
+
+  cd libsvm/
+  git clean -fdx
+  make
+  cd ..
+
+  cd apigenome
+  git clean -fdx
+  autoreconf -vfi
+  ./configure --prefix $PWD
+  make
+  make install
+  cd ..
+ 
+  cd libStatGen
+  git clean -fdx
+  make
+  cd ..
+ 
+  cd bamUtil
+  git clean -fdx
+  make
+  cd ..
+  
+  cd invNorm
+  git clean -fdx
+  make
+  cd ..
+  
+  cd htslib
+  git clean -fdx
+  autoheader
+  autoconf
+  ./configure --disable-libcurl
+  make
+  cd ..
+  
+  cd vt-topmed
+  git clean -fdx
+  make
+  cd ..
+  
+  cd cramore
+  git clean -fdx
+  mkdir build
+  cd build
+  cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INCLUDE_PATH=../htslib -DCMAKE_LIBRARY_PATH=../htslib .. 
+  make
+  cd ../..
+  
+  cd samtools
+  git clean -fdx
+  autoheader
+  autoconf -Wno-syntax
+  ./configure
+  make
+  cd ..
+  
+  cd bcftools
+  git clean -fdx
+  make
+  cd ..
+  
+  cd king
+  rm -f king *.o
+  g++ -O3 -c *.cpp
+  g++ -O3 -o king *.o -lz
+  cd ..
+
