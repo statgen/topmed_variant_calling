@@ -2,7 +2,20 @@ Bootstrap: library
 From: ubuntu:16.04
 
 %files
-  . /topmed_variant_calling
+  .git /topmed_variant_calling/.git
+  .gitmodules /topmed_variant_calling/.gitmodules
+  apigenome /topmed_variant_calling/apigenome
+  bamUtil /topmed_variant_calling/bamUtil
+  bcftools /topmed_variant_calling/bcftools
+  cramore /topmed_variant_calling/cramore
+  htslib /topmed_variant_calling/htslib
+  invNorm /topmed_variant_calling/invNorm
+  king /topmed_variant_calling/king
+  libStatGen /topmed_variant_calling/libStatGen
+  libsvm /topmed_variant_calling/libsvm
+  samtools /topmed_variant_calling/samtools
+  scripts /topmed_variant_calling/scripts
+  vt-topmed /topmed_variant_calling/vt-topmed
 
 %environment
   export LC_ALL=C
@@ -16,6 +29,8 @@ From: ubuntu:16.04
     autoconf \
     build-essential \
     cmake \
+    default-jre \
+    default-jdk \
     git \
     ghostscript \
     gnuplot \
@@ -41,6 +56,11 @@ From: ubuntu:16.04
   unzip plink_linux_x86_64_20190617.zip
   install -T plink /usr/local/bin/plink-1.9
   cd ..
+
+  wget https://sourceforge.net/projects/snpeff/files/snpEff_v4_3t_core.zip/download
+  unzip download
+  rm download
+  rm -r clinEff/
 
   cd libsvm/
   git clean -fdx
@@ -76,6 +96,8 @@ From: ubuntu:16.04
   autoconf
   ./configure --disable-libcurl
   make
+  install bgzip /usr/local/bin
+  install tabix /usr/local/bin
   cd ..
   
   cd vt-topmed
@@ -97,11 +119,13 @@ From: ubuntu:16.04
   autoconf -Wno-syntax
   ./configure
   make
+  make install
   cd ..
   
   cd bcftools
   git clean -fdx
   make
+  make install
   cd ..
   
   cd king
