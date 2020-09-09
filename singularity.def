@@ -64,7 +64,7 @@ From: ubuntu:16.04
   rm -r clinEff/
 
   cd libsvm/
-  git clean -fdx
+  make clean
   make
   cd ..
 
