@@ -31,6 +31,7 @@ From: ubuntu:16.04
     cmake \
     default-jre \
     default-jdk \
+    gdb \
     git \
     ghostscript \
     gnuplot \
@@ -100,12 +101,7 @@ From: ubuntu:16.04
   install bgzip /usr/local/bin
   install tabix /usr/local/bin
   cd ..
-  
-  cd vt-topmed
-  git clean -fdx
-  make
-  cd ..
-  
+ 
   cd cramore
   git clean -fdx
   mkdir build
@@ -127,6 +123,21 @@ From: ubuntu:16.04
   git clean -fdx
   make
   make install
+  cd ..
+
+  cd htslib
+  git checkout 1.9
+  autoheader
+  autoconf
+  ./configure --disable-libcurl
+  make clean
+  make
+  cd ..
+
+  cd vt-topmed
+  git clean -fdx
+  rm -f vt
+  make
   cd ..
   
   cd king
