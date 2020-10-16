@@ -91,12 +91,28 @@ From: ubuntu:16.04
   git clean -fdx
   make
   cd ..
+
+  cd htslib
+  git clean -fdx
+  git checkout 1.9
+  autoheader
+  autoconf
+  ./configure --disable-libcurl
+  make
+  cd ..
+
+  cd vt-topmed
+  git clean -fdx
+  make
+  cd ..
   
   cd htslib
+  git checkout 1.10.2
   git clean -fdx
   autoheader
   autoconf
   ./configure --disable-libcurl
+  make clean
   make
   install bgzip /usr/local/bin
   install tabix /usr/local/bin
@@ -125,21 +141,6 @@ From: ubuntu:16.04
   make install
   cd ..
 
-  cd htslib
-  git checkout 1.9
-  autoheader
-  autoconf
-  ./configure --disable-libcurl
-  make clean
-  make
-  cd ..
-
-  cd vt-topmed
-  git clean -fdx
-  rm -f vt
-  make
-  cd ..
-  
   cd king
   rm -f king *.o
   g++ -O3 -c *.cpp
