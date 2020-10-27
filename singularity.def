@@ -94,11 +94,12 @@ From: ubuntu:16.04
 
   cd htslib
   git clean -fdx
-  git checkout 1.9
   autoheader
   autoconf
   ./configure --disable-libcurl
   make
+  install bgzip /usr/local/bin
+  install tabix /usr/local/bin
   cd ..
 
   cd vt-topmed
@@ -106,23 +107,11 @@ From: ubuntu:16.04
   make
   cd ..
   
-  cd htslib
-  git checkout 1.10.2
-  git clean -fdx
-  autoheader
-  autoconf
-  ./configure --disable-libcurl
-  make clean
-  make
-  install bgzip /usr/local/bin
-  install tabix /usr/local/bin
-  cd ..
- 
   cd cramore
   git clean -fdx
   mkdir build
   cd build
-  cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INCLUDE_PATH=../htslib -DCMAKE_LIBRARY_PATH=../htslib .. 
+  cmake -DHTS_INCLUDE_DIRS=/topmed_variant_calling/htslib  -DHTS_LIBRARIES=/topmed_variant_calling/htslib/libhts.a ..
   make
   cd ../..
   
