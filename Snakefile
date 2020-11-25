@@ -212,7 +212,7 @@ def get_batch_site_files(wc):
     num_batches = math.ceil(len(config["sample_ids"]) / config["batch_size"])
     ret = []
     for b in range(0, num_batches):
-        ret.append(("out/union/b{}/b{}_" + wc.chrom + "_" + wc.beg + "_" wc.end + ".merged.sites.bcf").format(b,b))
+        ret.append(("out/union/b{}/b{}_" + wc.chrom + "_" + wc.beg + "_" + wc.end + ".merged.sites.bcf").format(b,b))
     return ret
     
 
