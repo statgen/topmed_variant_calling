@@ -343,6 +343,30 @@ rule all_batches:
     input:
         ["out/b" + str(b) + ".done" for b in range(0, math.ceil(len(config["sample_ids"]) / config["batch_size"]))]
 
+
+rule full_sex_map:
+    input:
+        ["out/index/vb_xy_{batch}.tsv".format(batch=b) for b in range(0, math.ceil(len(config["sample_ids"]) / config["batch_size"]))]
+    output:
+        "out/index/sex_map.txt",
+        "out/index/merged_vb_xy.tsv"
+    threads: 1
+    resources:
+        mem_mb = mem_step_size
+    shell:
+        """
+        for f in {input}; do
+          if [[ $f == "out/index/vb_xy_0.tsv" ]]; then
+            cat $f
+          else
+            tail -n+2 $f
+          fi
+        done > {output[1]}
+
+        tail -n+2 {output[1]} | cut -f1,20 > {output[0]}
+        """
+
+
 def get_paste_input(wc):
     ret = []
     region_sz=int(config["region_size"])
@@ -353,9 +377,11 @@ def get_paste_input(wc):
         ret.append("out/genotypes/b{batch}/b{batch}.{chrom}_{beg}_{end}.genotypes.bcf".format(batch=b, chrom=wc.chrom, beg=beg, end=end))
     return ret
 
+
 rule pasted_genotype_region:
     input:
-        get_paste_input
+        sex_map = rules.full_sex_map.output,
+        bcfs = get_paste_input
     output:
         "out/genotypes/merged/{chrom}/merged.{chrom}_{beg}_{end}.genotypes.bcf"
     threads: 1
@@ -377,8 +403,8 @@ rule pasted_genotype_region:
         #mkdir -p out/genotypes/minDP10/{wildcards.chrom}/
         #mkdir -p out/genotypes/hgdp/{wildcards.chrom}/
         
-        cut -f1,20 `ls -v out/index/vb_xy_*.tsv` | grep -v "^SAMPLE_ID" > ${{tmp_dir}}/sex_map.txt
-        echo {input} | tr ' ' '\n' > ${{tmp_dir}}/merged.bcflist.txt
+        #cut -f1,20 `ls -v out/index/vb_xy_*.tsv` | grep -v "^SAMPLE_ID" > ${{tmp_dir}}/sex_map.txt
+        echo {input.bcfs} | tr ' ' '\n' > ${{tmp_dir}}/merged.bcflist.txt
  
         merged_file=${{tmp_dir}}/$(basename {output})
         
@@ -388,7 +414,7 @@ rule pasted_genotype_region:
         {config[exe_root]}/cramore/bin/cramore vcf-paste-calls \
           --vcf-list ${{tmp_dir}}/merged.bcflist.txt \
           --num-pc 0 \
-          --sex-map ${{tmp_dir}}/sex_map.txt \
+          --sex-map {input.sex_map} \
           --xLabel chrX --yLabel chrY \
           --mtLabel chrM \
           --xStart 2781479 --xStop 155701383 \
@@ -407,13 +433,32 @@ rule pasted_genotype_region:
         rm -r ${{tmp_dir}}
         exit $rc
         """
+
+
 rule all_merged_genotypes:
     input:
         ["out/genotypes/merged/" + r.split("_")[0] + "/merged." + r + ".genotypes.bcf" for r in get_merge_region_strings(config["contigs"])]
 
+
+
+def get_merge_regions_for_region(chrom, mbeg, mend):
+    ret = []
+    region_sz=int(config["region_size"])
+    merge_region_sz=int(config["merge_region_size"])
+
+    for i in range(0, region_sz // merge_region_sz):
+        beg = int(mbeg) + i * merge_region_sz
+        end = min(beg + merge_region_sz - 1, config["contigs"][chrom])
+        ret.append(str(beg) + "_" + str(end))
+        if end == config["contigs"][chrom]:
+            break
+    return ret
+
+
 rule mindp_region:
     input:
-        rules.pasted_genotype_region.output
+        sex_map = rules.full_sex_map.output,
+        bcfs = rules.pasted_genotype_region.output lambda wc: [rules.pasted_genotype_region.output.format(chrom=wc.chrom, region=r) for r in get_merge_regions_for_region(wc.chrom, wc.beg, wc.end)]
     output:
         "out/genotypes/minDP{min_dp}/{chrom}/merged.{chrom}_{beg}_{end}.gtonly.minDP{min_dp}.bcf"
     threads: 1
@@ -423,21 +468,31 @@ rule mindp_region:
         """
         set +e
         tmp_dir=`mktemp -d`
-        
-        cut -f1,20 `ls -v out/index/vb_xy_*.tsv` | grep -v "^SAMPLE_ID" > ${{tmp_dir}}/sex_map.txt
-
+        mkdir ${{tmp_dir}}/chunks        
         mindp_file=${{tmp_dir}}/$(basename {output})
-        {config[exe_root]}/cramore/bin/cramore vcf-squeeze \
-          --in {input} \
-          --sex-map ${{tmp_dir}}/sex_map.txt \
-          --x-label chrX --y-label chrY --mt-label chrM \
-          --x-start 2781479 --x-stop 155701383 \
-          --minDP-male-X $(( {wildcards.min_dp} / 2 )) \
-          --minDP {wildcards.min_dp} \
-          --out ${{mindp_file}} \
-          > ${{mindp_file}}.out 2> ${{mindp_file}}.err &&
-        {config[exe_root]}/bcftools/bcftools index -f ${{mindp_file}}
-        rc=$?
+        
+        #cut -f1,20 `ls -v out/index/vb_xy_*.tsv` | grep -v "^SAMPLE_ID" > ${{tmp_dir}}/sex_map.txt
+
+        for input_chunk in {input.bcfs}; do
+          chunk_mindp_file=${{tmp_dir}}/chunks/$(basename ${{input_chunk}} .bcf).mindp_chunk.bcf
+          {config[exe_root]}/cramore/bin/cramore vcf-squeeze \
+            --in {input} \
+            --sex-map {input.sex_map} \
+            --x-label chrX --y-label chrY --mt-label chrM \
+            --x-start 2781479 --x-stop 155701383 \
+            --minDP-male-X $(( {wildcards.min_dp} / 2 )) \
+            --minDP {wildcards.min_dp} \
+            --out ${{chunk_mindp_file}} \
+            > ${{mindp_file}}.out 2> ${{mindp_file}}.err
+          rc=$?
+          [[ $rc != 0 ]] && break;
+        done
+
+        if [[ $rc == 0 ]]; then
+          {config[exe_root]}/bcftools/bcftools concat --naive $(ls -v ${{tmp_dir}}/chunks/*.mindp_chunk.bcf) -O -o ${{mindp_file}} &&
+          {config[exe_root]}/bcftools/bcftools index -f ${{mindp_file}}
+        fi
+ 
         mv ${{mindp_file}}.out ${{mindp_file}}.err $(dirname {output})/
 
         if [[ $rc == 0 ]]; then
@@ -529,24 +584,17 @@ rule kinship:
         """
 
 rule pedigree:
-    input: rules.kinship.output
-    output: "out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.king.inferred.ped"
+    input:
+        sex_map = rules.full_sex_map.output,
+        kin = rules.kinship.output
+    output: 
+        "out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.king.inferred.ped"
     threads: 1
     resources:
         mem_mb = lambda wc, attempt: mem_step_size * attempt
     shell:
         """
-        cut -f1,20 `ls -v out/index/vb_xy_*.tsv` | grep -v "^SAMPLE_ID" > out/index/sex_map.txt
-
-        for f in `ls -v out/index/vb_xy_*.tsv`; do
-          if [[ $f == "out/index/vb_xy_0.tsv" ]]; then
-            cat $f
-          else
-            tail -n+2 $f
-          fi
-        done > out/index/merged_vb_xy.tsv
-
-        {config[exe_root]}/apigenome/bin/vcf-infer-ped --kin0 {input} --sex out/index/sex_map.txt --out {output}
+        {config[exe_root]}/apigenome/bin/vcf-infer-ped --kin0 {input.kin} --sex {input.sex_map} --out {output}
         """
 
 rule filtered_pedigree:
@@ -571,10 +619,11 @@ rule filtered_pedigree:
         #perl $scripts_dir/scripts/c02-filter-ped.pl {input.ped} {params.mendel_prefix} out/index/merged_vb_xy.tsv > {output}
         """
 
+
 rule milk_filtered_region:
     input: 
         pedigree = rules.filtered_pedigree.output,
-        bcf = "out/genotypes/merged/{chrom}/merged.{chrom}_{beg}_{end}.genotypes.bcf"
+        bcf = lambda wc: ["out/genotypes/merged/{chrom}/merged.{chrom}_{region}.genotypes.bcf".format(chrom=wc.chrom, region=r) for r in get_merge_regions_for_region(wc.chrom, wc.beg, wc.end)]
     output:
         "out/milk/{chrom}/milk.{chrom}_{beg}_{end}.sites.vcf.gz"
     threads: 1
@@ -584,20 +633,31 @@ rule milk_filtered_region:
         """
         set +e
         tmp_dir=`mktemp -d`
+
+        for input_file in {input.bcf}; do
+          tmp_chunk_out=${{tmp_dir}}/chunks/$(basename $input_file .bcf).milk.vcf.gz
+          {config[exe_root]}/vt-topmed/vt milk_filter \
+            -f {input.pedigree} \
+            -b ${{input_file}} \
+            -o ${{tmp_chunk_out}} \
+            -g out/index/sex_map.txt \
+            --xLabel chrX --yLabel chrY --mtLabel chrM \
+            --xStart 2781479 --xStop 155701383 \
+            --af-field AF
+          rc=$?
+        done
+       
         tmp_out=${{tmp_dir}}/$(basename {output} .sites.vcf.gz).full.vcf.gz
 
-        {config[exe_root]}/vt-topmed/vt milk_filter \
-          -f {input.pedigree} \
-          -b {input.bcf} \
-          -o ${{tmp_out}} \
-          -g out/index/sex_map.txt \
-          --xLabel chrX --yLabel chrY --mtLabel chrM \
-          --xStart 2781479 --xStop 155701383 \
-          --af-field AF &&
-        zcat ${{tmp_out}} | cut -f 1-8 | {config[exe_root]}/htslib/bgzip -c > ${{tmp_dir}}/$(basename {output})
-        rc=$?
-        
         if [[ $rc == 0 ]]; then
+          {config[exe_root]}/bcftools/bcftools concat --naive $(ls -v ${{tmp_dir}}/chunks/*.milk.vcf.gz) -Oz -o ${{tmp_out}} &&
+          rm -r ${{tmp_dir}}/chunks/ &&
+          zcat ${{tmp_out}} | cut -f 1-8 | {config[exe_root]}/htslib/bgzip -c > ${{tmp_dir}}/$(basename {output})
+          rc=$?
+        fi
+ 
+        if [[ $rc == 0 ]]; then
+          # TODO: only move sites file
           mv ${{tmp_dir}}/* $(dirname {output})/
           rc=$?
         fi
