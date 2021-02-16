@@ -11,6 +11,7 @@ my $vcfsummary2 = "$ENV{'EXE_PREFIX'}/apigenome/bin/vcf-summary-v2";
 my $ref = "resources/ref/hs38DH.fa";
 my $dbsnp = "resources/ref/dbsnp_142.b38.vcf.gz";
 my @posVcfs = qw(resources/ref/hapmap_3.3.b38.sites.vcf.gz resources/ref/1000G_omni2.5.b38.sites.PASS.vcf.gz);
+my ($xLabel,$xStart,$xStop) = ("chrX", 2781479, 155701383);
     
 open(SVM,"zcat $svm|") || die "Cannot open file\n";
 open(MILK,"zcat $milk | grep -v ^# |") || die "Cannot open file\n";
@@ -36,13 +37,14 @@ while(<SVM>) {
 	my @M = split(/[\t\r\n]/,<MILK>);
 	die unless ( $F[1] == $M[1] );
 
-	#print STDERR "Processing $F[0]:$F[1]\n" if ( $. % 1000000 == 0 );
+	print STDERR "Processing $F[0]:$F[1]\n" if ( $. % 1000000 == 0 );
 
 	my ($dup,$trio) = ($1,$2) if ( $M[7] =~ /;DUP_CONC_THRES=([^;]+);.*;TRIO_CONC_THRES=([^;]+)/ );
 	my $fmis = $1 if ( $F[7] =~ /;FMIS10=([^;]+)/ );
 	my @dups = split(/,/,$dup);
 	my @trios = split(/,/,$trio);
 
+        ## calculate dup discordance
 	my $duphet  = $dups[4];
 	my $dupdisc = $dups[1]+$dups[2]+$dups[3]+$dups[5]+$dups[6]+$dups[7];
 	my $dupnhom = $duphet + $dupdisc;
@@ -61,6 +63,26 @@ while(<SVM>) {
 	## 24,25,26 : 2,2,0 D  2,2,1 D  2,2,2 C 
 	my @idxD = (1,2,5,6,8,11,15,18,20,21,24,25);
 	my @idxC = (0,7,19,26);
+
+        ## for chrX
+        ## 0,1,2    : 0,0,0 C  0,0,1 D  0,0,2 D
+        ## 3,4,5    : 0,1,0 A  0,1,1 A  0,1,2 A
+        ## 6,7,8    : 0,2,0 A  0,2,1 C  0,2,2 C
+        ## 9,10,11  : 1,0,0 A  1,0,1 A  1,0,2 A
+        ## 12,13,14 : 1,1,0 A  1,1,1 A  1,1,2 A
+        ## 15,16,17 : 1,2,0 A  1,2,1 A  1,2,2 A
+        ## 18,19,20 : 2,0,0 C  2,0,1 C  2,0,2 A
+        ## 21,22,23 : 2,1,0 A  2,1,1 A  2,1,2 A
+        ## 24,25,26 : 2,2,0 D  2,2,1 D  2,2,2 C
+        my @idxDX = (1,2,24,25);
+        my @idxCX = (0,7,8,18,19,26);
+
+        if ( ( $xLabel eq $chr ) && ( $F[1] >= $xStart ) && ( $F[1] <= $xStop ) ) {
+            @idxD = @idxDX;
+            @idxC = @idxCX;
+        }
+        print STDERR "$F[1] @idxD $xLabel $chr\n" if ( $F[1] % 1000000 == 0 );
+
 	my ($trioconc,$triodisc) = (0,0);
 	foreach my $i (@idxD) { $triodisc += $trios[$i]; }
 	foreach my $i (@idxC) { $trioconc += $trios[$i]; }
