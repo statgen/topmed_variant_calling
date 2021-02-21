@@ -306,7 +306,7 @@ rule genotyped_batch:
         {config[exe_root]}/cramore/bin/cramore dense-genotype \
           --in-cram-list ${{tmp_dir}}/cram_index.txt \
           --in-vcf {input.sites_bcf} \
-          --unit 6000000 \
+          --unit 1000000 \
           --region {wildcards.chrom}:{wildcards.beg}-{wildcards.end} \
           --sex-map ${{tmp_dir}}/sex_map.txt \
           --xLabel chrX \
@@ -534,21 +534,27 @@ rule hgdp_region:
         exit $rc
         """
 
-rule all_pasted_genotypes:
-    input:
-        ["out/genotypes/hgdp/" + r.split("_")[0] + "/merged." + r + ".gtonly.minDP0.hgdp.bcf" for r in get_region_strings(config["contigs"])] + ["out/genotypes/minDP10/" + r.split("_")[0] + "/merged." + r + ".gtonly.minDP10.bcf" for r in get_region_strings(config["contigs"])]
 
-def get_autosome_region_strings(contigs, autosome_contigs):
+def get_autosome_region_strings(contigs, autosome_contigs, region_size):
     ret = []
-    region_size = config["merge_region_size"]
     for c in autosome_contigs:
         for r in get_regions_for_contig(contigs[c], region_size):
             ret.append(c + "_" + r)
     return ret
 
+
+rule all_gtonly_genotypes:
+    input:
+        ["out/genotypes/minDP0/" + r.split("_")[0] + "/merged." + r + ".gtonly.minDP0.bcf" for r in get_merge_region_strings(config["contigs"])] + ["out/genotypes/minDP10/" + r.split("_")[0] + "/merged." + r + ".gtonly.minDP10.bcf" for r in get_merge_region_strings(config["contigs"])]
+
+rule all_hgdp_genotypes:
+    input:
+        ["out/genotypes/hgdp/" + r.split("_")[0] + "/merged." + r + ".gtonly.minDP0.hgdp.bcf" for r in get_autosome_region_strings(config["contigs"], config["autosome_contigs"], config["region_size"])]
+
+
 rule concatenated_hgdp_autosomes:
     input:
-        ["out/genotypes/hgdp/" + r.split("_")[0] + "/merged." + r + ".gtonly.minDP0.hgdp.bcf" for r in get_autosome_region_strings(config["contigs"], config["autosome_contigs"])]
+        ["out/genotypes/hgdp/" + r.split("_")[0] + "/merged." + r + ".gtonly.minDP0.hgdp.bcf" for r in get_autosome_region_strings(config["contigs"], config["autosome_contigs"], config["region_size"])]
     output:
         "out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.bcf"
     threads: 1
@@ -580,7 +586,7 @@ rule kinship:
     shell:
         """
         output_file={output}
-        {config[exe_root]}/king/king -b {input} --related --degree 1 --kinship --prefix ${{output_file%.kin0}}
+        {config[exe_root]}/king/king -b {input} --cpus {threads} --related --degree 1 --kinship --prefix ${{output_file%.kin0}}
         """
 
 rule pedigree:
@@ -618,7 +624,6 @@ rule filtered_pedigree:
         #scripts_dir=/net/wonderland/home/lefaivej/topmed_variant_calling_master
         #perl $scripts_dir/scripts/c02-filter-ped.pl {input.ped} {params.mendel_prefix} out/index/merged_vb_xy.tsv > {output}
         """
-
 
 rule milk_filtered_region:
     input: 
@@ -668,7 +673,7 @@ rule milk_filtered_region:
 
 
 def get_concatenated_milk_chromome_input(wc):
-    return ["out/milk/" + wc.chrom + "/milk." + wc.chrom + "_" + r + ".sites.vcf.gz" for r in get_regions_for_contig(config["contigs"][wc.chrom], config["merge_region_size"])]
+    return ["out/milk/" + wc.chrom + "/milk." + wc.chrom + "_" + r + ".sites.vcf.gz" for r in get_regions_for_contig(config["contigs"][wc.chrom], config["region_size"])]
 
 rule concatenated_milk_chromosome:
     input:
@@ -733,7 +738,7 @@ rule missingness_statistics:
 
 rule concatenated_missignenss_statistics:
     input:
-       lambda wc: ["out/missingness_update/" + wc.chrom + "/merged." + wc.chrom + "_" + r + ".gtonly.minDP10.missigness_update.sites.bcf" for r in get_regions_for_contig(config["contigs"][wc.chrom], config["merge_region_size"])]
+       lambda wc: ["out/missingness_update/" + wc.chrom + "/merged." + wc.chrom + "_" + r + ".gtonly.minDP10.missigness_update.sites.bcf" for r in get_regions_for_contig(config["contigs"][wc.chrom], config["region_size"])]
     output:
         "out/missingness_update/merged.{chrom}.gtonly.minDP10.missigness_update.sites.bcf"
     threads: 1
@@ -749,7 +754,7 @@ rule milk_with_fmis_sites:
     input:
         rules.concatenated_milk_chromosome.output, rules.concatenated_missignenss_statistics.output
     output:
-        "out/svm-new/input/milk_with_fmis.{chrom}.sites.vcf.gz"
+        "out/svm/input/milk_with_fmis.{chrom}.sites.vcf.gz"
     threads: 1
     resources:
         mem_mb = lambda wc, attempt: mem_step_size * attempt
@@ -849,7 +854,7 @@ rule hard_filtered_sites:
     shell:
         """
         export EXE_PREFIX={config[exe_root]}
-        perl {config[exe_root]}/scripts/e04-filter-vars.pl {input} {wildcards.chrom} {params.output_prefix}
+        perl {config[exe_root]}/scripts/e04-filter-vars-fixedX.pl {input} {wildcards.chrom} {params.output_prefix}
         """
 
 rule all_hard_called_sites:
@@ -979,7 +984,7 @@ rule filtered_genotypes:
 
 rule concatenated_filtered_genotypes:
     input:
-        lambda wc: [rules.filtered_genotypes.output[0].format(chrom=wc.chrom, min_dp=wc.min_dp, region=r) for r in get_regions_for_contig(config["contigs"][wc.chrom], config["merge_region_size"])]
+        lambda wc: [rules.filtered_genotypes.output[0].format(chrom=wc.chrom, min_dp=wc.min_dp, region=r) for r in get_regions_for_contig(config["contigs"][wc.chrom], config["region_size"])]
     output: "out/filtered_genotypes/minDP{min_dp}/merged.{chrom}.gtonly.minDP{min_dp}.filtered.bcf"
     threads: 1
     resources:
