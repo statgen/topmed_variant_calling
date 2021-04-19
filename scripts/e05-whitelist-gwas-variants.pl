@@ -9,7 +9,7 @@ my $nw = 0;
 open(IN,"resources/gwascatalog.20200204.uniq.rsid.entries.tsv") || die "Cannot open file\n";
 while(<IN>) {
     my ($build,$rsno,@F) = split;
-    next unless ( $F[0] eq "chr$chr" );
+    next unless ( $F[0] eq "$chr" );
     my @alts = split(/,/,$F[4]);
     next unless ( $F[7] =~ /;CAF=/ );
     my @cafs = split(/,/,$1) if ( $F[7] =~ /;CAF=([^;]+);/ );
@@ -28,6 +28,10 @@ close IN;
 
 print STDERR "Finished loading $nw variants to be whitelisted\n";
 
+if ($nw == 0) {
+  die("Error: no variants to be whitelisted\n");
+}
+
 my $vcf = $ARGV[1]; #"release/sites/nowhite/freeze9.merged.chr$chr.filtered.anno.sites.vcf.gz";
 my $outprefix  = $ARGV[2]; #"release/sites/freeze9.merged.chr$chr.filtered.anno.gwas.sites";
 my $vcfsummary2 = "$ENV{'EXE_PREFIX'}/apigenome/bin/vcf-summary-v2";
@@ -37,7 +41,7 @@ my @posVcfs = qw(resources/ref/hapmap_3.3.b38.sites.vcf.gz resources/ref/1000G_o
     
 open(VCF,"zcat $vcf |") || die "Cannot open file\n";
 open(OUT1," | $ENV{'EXE_PREFIX'}/htslib/bgzip -c > $outprefix.vcf.gz") || die "Cannot open file\n";
-open(OUT2, "| $vcfsummary2 --ref $ref --db $dbsnp --FNRvcf $posVcfs[0] --chr chr$chr --tabix $ENV{'EXE_PREFIX'}/htslib/tabix --bgzip $ENV{'EXE_PREFIX'}/htslib/bgzip > $outprefix.summary_v2") || die "Cannot open file\n";
+open(OUT2, "| $vcfsummary2 --ref $ref --db $dbsnp --FNRvcf $posVcfs[0] --chr $chr --tabix $ENV{'EXE_PREFIX'}/htslib/tabix --bgzip $ENV{'EXE_PREFIX'}/htslib/bgzip > $outprefix.summary_v2") || die "Cannot open file\n";
 
 my ($ngwasPass,$ngwasKeep,$ngwasSwitch) = (0,0,0);
 while(<VCF>) {
