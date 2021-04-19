@@ -956,12 +956,25 @@ rule filtered_genotypes:
         tmp_out=$tmp_dir/$(basename {output})
         set -uo pipefail
         
-        {config[exe_root]}/cramore/bin/cramore vcf-update-sites --md-info GWAS \
-          --rm-info AF --rm-info GC --rm-info GN --rm-info HWEAF_P --rm-info AVG_IF \
-          --md-info SVM --replace-filter --replace-id \
+        {config[exe_root]}/cramore/bin/cramore vcf-update-sites \
+          --rm-info AF \
+          --rm-info GC \
+          --rm-info GN \
+          --rm-info HWEAF_P \
+          --rm-info AVG_IF \
+          --rm-info FLT20 \
+          --rm-info NS_NREF \
+          --replace-filter --replace-id \
+          --md-info SVM \
+          --md-info ANN \
           --md-info FMIS10 \
-          --md-info DUP_NH_ALL --md-info DUP_NH_DIS --md-info TRI_NH_ALL \
+          --md-info DUP_NH_ALL \
+          --md-info DUP_NH_DIS \
+          --md-info TRI_NH_ALL \
           --md-info TRI_NH_DIS \
+          --md-info GWAS \
+          --md-info CLINVAR \
+          --md-info CLINVARB \
           --vcf {input.genotypes} \
           --site {input.sites} \
           --region {wildcards.chrom}:{wildcards.beg}-{wildcards.end} \
