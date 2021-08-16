@@ -219,6 +219,8 @@ def get_batch_site_files(wc):
 rule union_site_list:
     input:
         get_batch_site_files
+    params:
+        ref_path = "resources/ref/hs38DH.fa"
     output:
         "out/union/union.{chrom}_{beg}_{end}.merged.sites.bcf",
         "out/union/union.{chrom}_{beg}_{end}.sites.bcf"
@@ -234,7 +236,7 @@ rule union_site_list:
           > {output[0]}.out 2> {output[0]}.err
 
         {config[exe_root]}/bcftools/bcftools index -f {output[0]}
-        {config[exe_root]}/vt-topmed/vt annotate_indels -r resources/ref/hs38DH.fa {output[0]} -o + 2> {output[0]}.annotate.err \
+        {config[exe_root]}/vt-topmed/vt annotate_indels -r {params.ref_path} {output[0]} -o + 2> {output[0]}.annotate.err \
           | {config[exe_root]}/vt-topmed/vt consolidate_variants + -o {output[1]} > {output[1]}.out 2> {output[1]}.err
         {config[exe_root]}/bcftools/bcftools index -f {output[1]}
         """
@@ -334,6 +336,8 @@ rule entire_batch:
     output:
         "out/b{batch}.done"
     threads: 1
+    resources:
+        mem_mb = mem_step_size
     shell:
         """
         touch {output}
@@ -380,7 +384,7 @@ def get_paste_input(wc):
 
 rule pasted_genotype_region:
     input:
-        sex_map = rules.full_sex_map.output,
+        sex_map = rules.full_sex_map.output[0],
         bcfs = get_paste_input
     output:
         "out/genotypes/merged/{chrom}/merged.{chrom}_{beg}_{end}.genotypes.bcf"
@@ -457,8 +461,8 @@ def get_merge_regions_for_region(chrom, mbeg, mend):
 
 rule mindp_region:
     input:
-        sex_map = rules.full_sex_map.output,
-        bcfs = rules.pasted_genotype_region.output lambda wc: [rules.pasted_genotype_region.output.format(chrom=wc.chrom, region=r) for r in get_merge_regions_for_region(wc.chrom, wc.beg, wc.end)]
+        sex_map = rules.full_sex_map.output[0],
+        bcfs = lambda wc: ["out/genotypes/merged/{chrom}/merged.{chrom}_{region}.genotypes.bcf".format(chrom=wc.chrom, region=r) for r in get_merge_regions_for_region(wc.chrom, wc.beg, wc.end)] # rules.pasted_genotype_region.output
     output:
         "out/genotypes/minDP{min_dp}/{chrom}/merged.{chrom}_{beg}_{end}.gtonly.minDP{min_dp}.bcf"
     threads: 1
@@ -476,7 +480,7 @@ rule mindp_region:
         for input_chunk in {input.bcfs}; do
           chunk_mindp_file=${{tmp_dir}}/chunks/$(basename ${{input_chunk}} .bcf).mindp_chunk.bcf
           {config[exe_root]}/cramore/bin/cramore vcf-squeeze \
-            --in {input} \
+            --in $input_chunk \
             --sex-map {input.sex_map} \
             --x-label chrX --y-label chrY --mt-label chrM \
             --x-start 2781479 --x-stop 155701383 \
@@ -489,7 +493,7 @@ rule mindp_region:
         done
 
         if [[ $rc == 0 ]]; then
-          {config[exe_root]}/bcftools/bcftools concat --naive $(ls -v ${{tmp_dir}}/chunks/*.mindp_chunk.bcf) -O -o ${{mindp_file}} &&
+          {config[exe_root]}/bcftools/bcftools concat --naive $(ls -v ${{tmp_dir}}/chunks/*.mindp_chunk.bcf) -O b -o ${{mindp_file}} &&
           {config[exe_root]}/bcftools/bcftools index -f ${{mindp_file}}
         fi
  
@@ -591,7 +595,7 @@ rule kinship:
 
 rule pedigree:
     input:
-        sex_map = rules.full_sex_map.output,
+        sex_map = rules.full_sex_map.output[0],
         kin = rules.kinship.output
     output: 
         "out/genotypes/hgdp/merged.autosomes.gtonly.minDP0.hgdp.king.inferred.ped"
@@ -638,6 +642,7 @@ rule milk_filtered_region:
         """
         set +e
         tmp_dir=`mktemp -d`
+        mkdir $tmp_dir/chunks
 
         for input_file in {input.bcf}; do
           tmp_chunk_out=${{tmp_dir}}/chunks/$(basename $input_file .bcf).milk.vcf.gz
@@ -770,7 +775,7 @@ rule milk_with_fmis_sites:
         rc=$?
          
         if [[ $rc == 0 ]]; then
-          mv $tmp_out $(dirname {output})/
+          mv $tmp_out ${{tmp_out}}.tbi $(dirname {output})/
           rc=$?
         fi
 
@@ -813,7 +818,8 @@ rule svm_filtered_vcf:
         vcf = rules.milk_with_fmis_sites.output,
         model = rules.svm_model.output
     params:
-        output_prefix = "out/svm/milk_svm.{chrom}"
+        output_prefix = "out/svm/milk_svm.{chrom}",
+        ref_path = "resources/ref/hs38DH.fa"
     output:
         "out/svm/milk_svm.{chrom}.sites.vcf.gz"
     threads: 1
@@ -825,7 +831,7 @@ rule svm_filtered_vcf:
           --ignore AVG_IF --ignore LLK0 --ignore BETA_IF \
           --in-vcf {input.vcf} \
           --out {params.output_prefix} \
-          --ref resources/ref/hs38DH.fa \
+          --ref {params.ref_path} \
           --dbsnp resources/ref/dbsnp_142.b38.vcf.gz \
           --posvcf resources/ref/hapmap_3.3.b38.sites.vcf.gz \
           --posvcf resources/ref/1000G_omni2.5.b38.sites.PASS.vcf.gz \
