@@ -40,8 +40,8 @@ my $dbsnp = "resources/ref/dbsnp_142.b38.vcf.gz";
 my @posVcfs = qw(resources/ref/hapmap_3.3.b38.sites.vcf.gz resources/ref/1000G_omni2.5.b38.sites.PASS.vcf.gz);
     
 open(VCF,"zcat $vcf |") || die "Cannot open file\n";
-open(OUT1," | $ENV{'EXE_PREFIX'}/htslib/bgzip -c > $outprefix.vcf.gz") || die "Cannot open file\n";
-open(OUT2, "| $vcfsummary2 --ref $ref --db $dbsnp --FNRvcf $posVcfs[0] --chr $chr --tabix $ENV{'EXE_PREFIX'}/htslib/tabix --bgzip $ENV{'EXE_PREFIX'}/htslib/bgzip > $outprefix.summary_v2") || die "Cannot open file\n";
+open(OUT1," | bgzip -c > $outprefix.vcf.gz") || die "Cannot open file\n";
+open(OUT2, "| $vcfsummary2 --ref $ref --db $dbsnp --FNRvcf $posVcfs[0] --chr $chr --tabix tabix --bgzip bgzip > $outprefix.summary_v2") || die "Cannot open file\n";
 
 my ($ngwasPass,$ngwasKeep,$ngwasSwitch) = (0,0,0);
 while(<VCF>) {
@@ -88,4 +88,4 @@ close VCF;
 
 print STDERR "Finished $ngwasPass $ngwasKeep $ngwasSwitch\n";
 
-print `$ENV{'EXE_PREFIX'}/htslib/tabix -f -pvcf $outprefix.vcf.gz`;
+print `tabix -f -pvcf $outprefix.vcf.gz`;
