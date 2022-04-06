@@ -936,7 +936,7 @@ rule annotated_sites:
 
 rule filtered_genotypes:
     input:
-        sites = rules.gwas_catalog_override.output,
+        sites = rules.annotated_sites.output, #rules.gwas_catalog_override.output,
         genotypes = "out/genotypes/minDP{min_dp}/{chrom}/merged.{chrom}_{beg}_{end}.gtonly.minDP{min_dp}.bcf" #rules.mindp_region.output
     output: "out/filtered_genotypes/minDP{min_dp}/{chrom}/merged.{chrom}_{beg}_{end}.gtonly.minDP{min_dp}.filtered.bcf"
     threads: 1
@@ -944,20 +944,6 @@ rule filtered_genotypes:
         mem_mb = lambda wc, attempt: mem_step_size * attempt
     shell:
         """
-        #sudo -u hmkang bash -c 'tabix -h /mnt/gcsfuse/topmed-vt/freeze9/release/sites/freeze9.merged.$INTERVAL$1$.filtered.anno.gwas.sites.vcf.gz $INTERVAL$1$:$INTERVAL$4$-$INTERVAL$5$ | bgzip -c > /home/hmkang/sites.vcf.gz'
-        
-        #{config[exe_root]}/cramore/bin/cramore vcf-update-sites --md-info GWAS \
-        #  --rm-info AF --rm-info GC --rm-info GN --rm-info HWEAF_P --rm-info AVG_IF \
-        #  --md-info SVM --md-info ANN --replace-filter --replace-id \
-        #  --md-info FMIS10 --md-info MAX_HM3_R2 --md-info LOG_HM3_BUDDY_03 --md-info LOG_HM3_BUDDY_05 \
-        #  --md-info LOG_HM3_BUDDY_08 --md-info LOG_HM3_DIST_03 --md-info LOG_HM3_DIST_05 \
-        #  --md-info LOG_HM3_DIST_08 --md-info DUP_NH_ALL --md-info DUP_NH_DIS --md-info TRI_NH_ALL \
-        #  --md-info TRI_NH_DIS \
-        #  --vcf {input.genotypes} \
-        #  --site {input.sites} \
-        #  --region {wildcards.chrom}:{wildcards.region} \
-        #  --out {output}
-
         tmp_dir=`mktemp -d`
         tmp_out=$tmp_dir/$(basename {output})
         set -uo pipefail
@@ -1003,7 +989,7 @@ rule filtered_genotypes:
 
 rule concatenated_filtered_genotypes:
     input:
-        lambda wc: [rules.filtered_genotypes.output[0].format(chrom=wc.chrom, min_dp=wc.min_dp, region=r) for r in get_regions_for_contig(config["contigs"][wc.chrom], config["region_size"])]
+        lambda wc: [rules.filtered_genotypes.output[0].format(chrom=wc.chrom, min_dp=wc.min_dp, beg=r.split("_")[0], end=r.split("_")[1]) for r in get_regions_for_contig(config["contigs"][wc.chrom], config["region_size"])]
     output: "out/filtered_genotypes/minDP{min_dp}/merged.{chrom}.gtonly.minDP{min_dp}.filtered.bcf"
     threads: 1
     resources:
@@ -1015,7 +1001,7 @@ rule concatenated_filtered_genotypes:
         set -uo pipefail
 
         {config[exe_root]}/bcftools/bcftools concat --naive {input} -o $tmp_out &&
-        {config[exe_root]}/bcftools/bcftools index -m 1 $tmp_out
+        {config[exe_root]}/bcftools/bcftools index $tmp_out
         rc=$?
 
         if [[ $rc == 0 ]]; then
