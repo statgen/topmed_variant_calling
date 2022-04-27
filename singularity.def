@@ -51,6 +51,15 @@ From: ubuntu:16.04
   git submodule init
   git submodule update
 
+  git clone https://github.com/samtools/htslib htslib-1.13
+  cd htslib-1.13
+  git checkout 1.13
+  git submodule update --init --recursive
+  autoreconf -i
+  ./configure --disable-libcurl
+  make
+  cd ..
+
   mkdir plink
   cd plink/
   wget http://s3.amazonaws.com/plink1-assets/plink_linux_x86_64_20190617.zip
@@ -111,7 +120,7 @@ From: ubuntu:16.04
   git clean -fdx
   mkdir build
   cd build
-  cmake -DHTS_INCLUDE_DIRS=/topmed_variant_calling/htslib  -DHTS_LIBRARIES=/topmed_variant_calling/htslib/libhts.a ..
+  cmake -DCMAKE_BUILD_TYPE=Debug -DHTS_INCLUDE_DIRS=/topmed_variant_calling/htslib-1.13  -DHTS_LIBRARIES=/topmed_variant_calling/htslib-1.13/libhts.a ..
   make
   cd ../..
   

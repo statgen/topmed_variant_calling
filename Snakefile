@@ -549,7 +549,7 @@ def get_autosome_region_strings(contigs, autosome_contigs, region_size):
 
 rule all_gtonly_genotypes:
     input:
-        ["out/genotypes/minDP0/" + r.split("_")[0] + "/merged." + r + ".gtonly.minDP0.bcf" for r in get_merge_region_strings(config["contigs"])] + ["out/genotypes/minDP10/" + r.split("_")[0] + "/merged." + r + ".gtonly.minDP10.bcf" for r in get_merge_region_strings(config["contigs"])]
+        ["out/genotypes/minDP0/" + r.split("_")[0] + "/merged." + r + ".gtonly.minDP0.bcf" for r in get_region_strings(config["contigs"])] + ["out/genotypes/minDP10/" + r.split("_")[0] + "/merged." + r + ".gtonly.minDP10.bcf" for r in get_region_strings(config["contigs"])]
 
 rule all_hgdp_genotypes:
     input:
