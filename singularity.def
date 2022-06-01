@@ -120,7 +120,7 @@ From: ubuntu:16.04
   git clean -fdx
   mkdir build
   cd build
-  cmake -DCMAKE_BUILD_TYPE=Debug -DHTS_INCLUDE_DIRS=/topmed_variant_calling/htslib-1.13  -DHTS_LIBRARIES=/topmed_variant_calling/htslib-1.13/libhts.a ..
+  cmake -DCMAKE_BUILD_TYPE=Release -DHTS_INCLUDE_DIRS=/topmed_variant_calling/htslib-1.13  -DHTS_LIBRARIES=/topmed_variant_calling/htslib-1.13/libhts.a ..
   make
   cd ../..
   
